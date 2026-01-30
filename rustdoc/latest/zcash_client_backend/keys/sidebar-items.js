@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["AddressGenerationError","DecodingError","DerivationError","Era","ReceiverRequirement","UnifiedAddressRequest"],"mod":["sapling","testing","transparent","zcashd"],"struct":["OutgoingViewingKey","ReceiverRequirements","UnifiedFullViewingKey","UnifiedIncomingViewingKey","UnifiedSpendingKey"]};
