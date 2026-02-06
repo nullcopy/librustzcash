@@ -1318,8 +1318,13 @@ where
                         .ok_or(Error::KeyNotAvailable(PoolType::Transparent))?
                         .derive_address_pubkey(*scope, *address_index)
                         .expect("spending key derivation should not fail"),
+
                     #[cfg(feature = "transparent-key-import")]
                     TransparentAddressSource::Standalone(pubkey) => *pubkey,
+
+                    // Transparent multisig is view-only for now
+                    #[cfg(feature = "zip48-multisig")]
+                    TransparentAddressSource::Zip48Multisig { .. } => todo!(),
                 };
 
                 utxos_spent.push(outpoint.clone());
@@ -1680,11 +1685,16 @@ where
                 .transparent()
                 .derive_secret_key(*scope, *address_index)
                 .expect("spending key derivation should not fail"),
+
             #[cfg(feature = "transparent-key-import")]
             TransparentAddressSource::Standalone(_) => *spending_keys
                 .standalone_transparent_keys
                 .get(&_address)
                 .ok_or(Error::AddressNotRecognized(_address))?,
+
+            // Transparent multisig is view-only for now
+            #[cfg(feature = "zip48-multisig")]
+            TransparentAddressSource::Zip48Multisig { .. } => todo!(),
         });
     }
     let sapling_extsks = &[
@@ -2053,8 +2063,15 @@ where
                                     scope,
                                     address_index,
                                 } => Some((index, *scope, *address_index)),
+
                                 #[cfg(feature = "transparent-key-import")]
                                 TransparentAddressSource::Standalone(_) => None,
+
+                                // Transparent multisig is view-only for now
+                                #[cfg(feature = "zip48-multisig")]
+                                TransparentAddressSource::Zip48Multisig { .. } => {
+                                    unimplemented!("spend ability not yet supported for multisigs")
+                                }
                             })
                     })
                     .collect::<Vec<_>>();

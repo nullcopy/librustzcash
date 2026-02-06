@@ -17,6 +17,8 @@ use zcash_protocol::{
     consensus::{BlockHeight, TxIndex},
     value::{BalanceError, Zatoshis},
 };
+#[cfg(feature = "zip48-multisig")]
+use zcash_script::script;
 use zip32::Scope;
 
 use crate::fees::sapling as sapling_fees;
@@ -759,6 +761,33 @@ impl TransparentAddressMetadata {
         }
     }
 
+    /// Returns a [`TransparentAddressMetadata`] for a ZIP 48 transparent multisig address derived
+    /// from a [`zip48::FullViewingKey`].
+    ///
+    /// The `scope`, `address_index`, and `redeem_script` should be the values used when
+    /// calling [`zip48::FullViewingKey::derive_address`].
+    ///
+    /// [`zip48::FullViewingKey`]: transparent::zip48::FullViewingKey
+    /// [`zip48::FullViewingKey::derive_address`]: transparent::zip48::FullViewingKey::derive_address
+    #[cfg(feature = "zip48-multisig")]
+    pub fn zip48_multisig(
+        scope: TransparentKeyScope,
+        address_index: NonHardenedChildIndex,
+        redeem_script: script::Redeem,
+        exposure: Exposure,
+        next_check_time: Option<SystemTime>,
+    ) -> Self {
+        Self {
+            source: TransparentAddressSource::Zip48Multisig {
+                scope,
+                address_index,
+                redeem_script,
+            },
+            exposure,
+            next_check_time,
+        }
+    }
+
     /// Returns the source metadata for the address.
     pub fn source(&self) -> &TransparentAddressSource {
         &self.source
@@ -806,6 +835,13 @@ impl TransparentAddressMetadata {
     pub fn address_index(&self) -> Option<NonHardenedChildIndex> {
         self.source.address_index()
     }
+
+    /// Returns the redeem script for the address, if this is a multisig address.
+    /// Returns `None` for non-multisig addresses.
+    #[cfg(feature = "zip48-multisig")]
+    pub fn redeem_script(&self) -> Option<&script::Redeem> {
+        self.source.redeem_script()
+    }
 }
 
 /// Source information for a transparent address.
@@ -818,11 +854,21 @@ pub enum TransparentAddressSource {
         scope: TransparentKeyScope,
         address_index: NonHardenedChildIndex,
     },
+
     /// The address was derived from a secp256k1 public key for which derivation information is
     /// unknown or for which the associated spending key was produced from system randomness.
     /// This variant provides the public key directly.
     #[cfg(feature = "transparent-key-import")]
     Standalone(secp256k1::PublicKey),
+
+    /// ZIP 48 transparent multisig derivation information for the address below account
+    /// pubkey level, i.e. the `change` and `index` elements of the path.
+    #[cfg(feature = "zip48-multisig")]
+    Zip48Multisig {
+        scope: TransparentKeyScope,
+        address_index: NonHardenedChildIndex,
+        redeem_script: script::Redeem,
+    },
 }
 
 #[cfg(feature = "transparent-inputs")]
@@ -832,8 +878,12 @@ impl TransparentAddressSource {
     pub fn scope(&self) -> Option<TransparentKeyScope> {
         match self {
             TransparentAddressSource::Derived { scope, .. } => Some(*scope),
+
             #[cfg(feature = "transparent-key-import")]
             TransparentAddressSource::Standalone(_) => None,
+
+            #[cfg(feature = "zip48-multisig")]
+            TransparentAddressSource::Zip48Multisig { scope, .. } => Some(*scope),
         }
     }
 
@@ -842,8 +892,26 @@ impl TransparentAddressSource {
     pub fn address_index(&self) -> Option<NonHardenedChildIndex> {
         match self {
             TransparentAddressSource::Derived { address_index, .. } => Some(*address_index),
+
             #[cfg(feature = "transparent-key-import")]
             TransparentAddressSource::Standalone(_) => None,
+
+            #[cfg(feature = "zip48-multisig")]
+            TransparentAddressSource::Zip48Multisig { address_index, .. } => Some(*address_index),
+        }
+    }
+
+    /// Returns the redeem script for the address, if this is a multisig address.
+    /// Returns `None` for non-multisig addresses.
+    #[cfg(feature = "zip48-multisig")]
+    pub fn redeem_script(&self) -> Option<&script::Redeem> {
+        match self {
+            TransparentAddressSource::Derived { .. } => None,
+
+            #[cfg(feature = "transparent-key-import")]
+            TransparentAddressSource::Standalone(_) => None,
+
+            TransparentAddressSource::Zip48Multisig { redeem_script, .. } => Some(redeem_script),
         }
     }
 }

@@ -193,6 +193,9 @@ transparent-inputs = [
 # from which it permits spending.
 transparent-key-import = ["transparent-inputs"]
 
+## Enables tracking of ZIP 48 transparent P2SH multisig wallets
+zip48-multisig = ["transparent-inputs"]
+
 ## Enables receiving and spending Orchard funds.
 orchard = ["dep:orchard", "dep:pasta_curves", "zcash_keys/orchard"]
 
