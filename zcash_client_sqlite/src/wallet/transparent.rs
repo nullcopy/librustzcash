@@ -47,6 +47,7 @@ use zcash_protocol::{
     value::{ZatBalance, Zatoshis},
 };
 use zcash_script::script;
+use zcash_script::script::Code;
 use zip32::{DiversifierIndex, Scope};
 
 #[cfg(feature = "transparent-key-import")]
@@ -2196,6 +2197,342 @@ pub(crate) fn queue_transparent_spend_detection<P: consensus::Parameters>(
     })?;
 
     Ok(())
+}
+
+/// Retrieves the ZIP 48 FVK from an account if it is a multisig account.
+#[cfg(feature = "zip48-multisig")]
+pub(crate) fn get_zip48_fvk(
+    conn: &Connection,
+    account_id: AccountRef,
+) -> Result<Option<Vec<u8>>, SqliteClientError> {
+    conn.query_row(
+        "SELECT zip48_fvk FROM accounts WHERE id = :id AND account_kind = 2",
+        named_params![":id": account_id.0],
+        |row| row.get::<_, Option<Vec<u8>>>(0),
+    )
+    .map_err(SqliteClientError::from)
+}
+
+/// Retrieves ZIP 48 multisig addresses for an account.
+///
+/// Returns addresses from the addresses table that have a redeem_script (indicating
+/// they are P2SH multisig addresses).
+#[cfg(feature = "zip48-multisig")]
+pub(crate) fn get_zip48_multisig_receivers<P: consensus::Parameters>(
+    conn: &Connection,
+    params: &P,
+    account_uuid: AccountUuid,
+    include_change: bool,
+) -> Result<HashMap<TransparentAddress, TransparentAddressMetadata>, SqliteClientError> {
+    let account =
+        get_account(conn, params, account_uuid)?.ok_or(SqliteClientError::AccountUnknown)?;
+
+    // Verify this is a multisig account (account_kind = 2)
+    let account_kind: u32 = conn.query_row(
+        "SELECT account_kind FROM accounts WHERE id = :id",
+        named_params![":id": account.id.0],
+        |row| row.get(0),
+    )?;
+
+    if account_kind != 2 {
+        return Ok(HashMap::new());
+    }
+
+    let mut result = HashMap::new();
+
+    let scope_filter = if include_change {
+        "key_scope IN (0, 1)" // External and Internal
+    } else {
+        "key_scope = 0" // External only
+    };
+
+    let mut stmt = conn.prepare(&format!(
+        "SELECT
+                cached_transparent_receiver_address,
+                key_scope,
+                transparent_child_index,
+                redeem_script,
+                exposed_at_height
+             FROM addresses
+             WHERE account_id = :account_id
+             AND redeem_script IS NOT NULL
+             AND cached_transparent_receiver_address IS NOT NULL
+             AND {}",
+        scope_filter
+    ))?;
+
+    let mut rows = stmt.query(named_params![":account_id": account.id.0])?;
+
+    while let Some(row) = rows.next()? {
+        use zcash_script::script::Code;
+
+        let addr_str: String = row.get(0)?;
+        let key_scope_code: i64 = row.get(1)?;
+        let address_index: u32 = row.get(2)?;
+        let redeem_script_bytes: Vec<u8> = row.get(3)?;
+        let exposed_at_height: Option<u32> = row.get(4)?;
+
+        let taddr = TransparentAddress::decode(params, &addr_str)?;
+        let key_scope = KeyScope::decode(key_scope_code)?
+            .as_transparent()
+            .ok_or_else(|| {
+                SqliteClientError::CorruptedData(
+                    "Invalid key scope for multisig address".to_owned(),
+                )
+            })?;
+
+        let address_index = NonHardenedChildIndex::from_index(address_index).ok_or_else(|| {
+            SqliteClientError::CorruptedData("Invalid transparent child index".to_owned())
+        })?;
+
+        let redeem_script = script::Redeem::parse(&Code(redeem_script_bytes)).map_err(|e| {
+            SqliteClientError::CorruptedData(format!("Invalid redeem script: {:?}", e))
+        })?;
+
+        let exposure = exposed_at_height.map_or(Exposure::Unknown, |h| Exposure::Exposed {
+            at_height: BlockHeight::from(h),
+            gap_metadata: GapMetadata::DerivationUnknown,
+        });
+
+        let metadata = TransparentAddressMetadata::zip48_multisig(
+            key_scope,
+            address_index,
+            redeem_script,
+            exposure,
+            None,
+        );
+
+        result.insert(taddr, metadata);
+    }
+
+    Ok(result)
+}
+
+/// Computes the balance for a multisig account.
+#[cfg(feature = "zip48-multisig")]
+pub(crate) fn get_zip48_multisig_balance<P: consensus::Parameters>(
+    conn: &Connection,
+    params: &P,
+    account_uuid: AccountUuid,
+    target_height: u32,
+    min_confirmations: u32,
+) -> Result<Balance, SqliteClientError> {
+    let account =
+        get_account(conn, params, account_uuid)?.ok_or(SqliteClientError::AccountUnknown)?;
+
+    // Verify this is a multisig account
+    let account_kind: u32 = conn.query_row(
+        "SELECT account_kind FROM accounts WHERE id = :id",
+        named_params![":id": account.id.0],
+        |row| row.get(0),
+    )?;
+
+    if account_kind != 2 {
+        return Err(SqliteClientError::BadAccountData(
+            "Account is not a multisig account".to_owned(),
+        ));
+    }
+
+    let mut balance = Balance::ZERO;
+
+    // Get spendable balance (confirmed UTXOs)
+    let mut stmt_spendable = conn.prepare(&format!(
+        "SELECT u.value_zat
+             FROM transparent_received_outputs u
+             JOIN accounts ON accounts.id = u.account_id
+             JOIN transactions t ON t.id_tx = u.transaction_id
+             JOIN addresses ON addresses.id = u.address_id
+             WHERE accounts.uuid = :account_uuid
+             AND addresses.redeem_script IS NOT NULL
+             AND u.value_zat > 0
+             AND ({})
+             AND u.id NOT IN ({})",
+        tx_unexpired_condition_minconf_0("t"),
+        spent_utxos_clause()
+    ))?;
+
+    let mut rows = stmt_spendable.query(named_params![
+        ":account_uuid": account_uuid.0,
+        ":target_height": target_height,
+        ":min_confirmations": min_confirmations,
+    ])?;
+
+    while let Some(row) = rows.next()? {
+        let value = Zatoshis::from_nonnegative_i64(row.get(0)?)?;
+        if value < zip317::MARGINAL_FEE {
+            balance.add_uneconomic_value(value)?;
+        } else {
+            balance.add_spendable_value(value)?;
+        }
+    }
+
+    // Get pending balance (unconfirmed UTXOs) if min_confirmations > 0
+    if min_confirmations > 0 {
+        let mut stmt_pending = conn.prepare(&format!(
+                "SELECT u.value_zat
+                 FROM transparent_received_outputs u
+                 JOIN accounts ON accounts.id = u.account_id
+                 JOIN transactions t ON t.id_tx = u.transaction_id
+                 JOIN addresses ON addresses.id = u.address_id
+                 WHERE accounts.uuid = :account_uuid
+                 AND addresses.redeem_script IS NOT NULL
+                 AND u.value_zat > 0
+                 AND (
+                     (t.mined_height < :target_height AND :target_height - t.mined_height < :min_confirmations)
+                     OR (t.mined_height IS NULL AND (t.expiry_height = 0 OR t.expiry_height >= :target_height))
+                 )
+                 AND u.id NOT IN ({})",
+                spent_utxos_clause()
+            ))?;
+
+        let mut rows = stmt_pending.query(named_params![
+            ":account_uuid": account_uuid.0,
+            ":target_height": target_height,
+            ":min_confirmations": min_confirmations,
+        ])?;
+
+        while let Some(row) = rows.next()? {
+            let value = Zatoshis::from_nonnegative_i64(row.get(0)?)?;
+            balance.add_pending_spendable_value(value)?;
+        }
+    }
+
+    Ok(balance)
+}
+
+/// Retrieves the redeem script for a multisig address.
+#[cfg(feature = "zip48-multisig")]
+pub(crate) fn get_redeem_script<P: consensus::Parameters>(
+    conn: &Connection,
+    params: &P,
+    account_uuid: AccountUuid,
+    address: &TransparentAddress,
+) -> Result<Option<script::Redeem>, SqliteClientError> {
+    let account =
+        get_account(conn, params, account_uuid)?.ok_or(SqliteClientError::AccountUnknown)?;
+
+    let addr_str = address.encode(params);
+
+    let redeem_script_opt: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT redeem_script
+                 FROM addresses
+                 WHERE account_id = :account_id
+                 AND cached_transparent_receiver_address = :address
+                 AND redeem_script IS NOT NULL",
+            named_params![
+                ":account_id": account.id.0,
+                ":address": addr_str
+            ],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+
+    redeem_script_opt
+        .map(|bytes| {
+            script::Redeem::parse(&Code(bytes)).map_err(|e| {
+                SqliteClientError::CorruptedData(format!("Invalid redeem script: {:?}", e))
+            })
+        })
+        .transpose()
+}
+
+/// Inserts a new multisig address into the addresses table.
+#[cfg(feature = "zip48-multisig")]
+pub(crate) fn insert_multisig_address<P: consensus::Parameters>(
+    conn: &rusqlite::Transaction<'_>,
+    params: &P,
+    account_id: AccountRef,
+    scope: TransparentKeyScope,
+    address_index: NonHardenedChildIndex,
+    address: &TransparentAddress,
+    redeem_script: &script::Redeem,
+) -> Result<AddressRef, SqliteClientError> {
+    use zcash_script::script::Evaluable;
+
+    use super::encode_diversifier_index_be;
+
+    let chain_tip = chain_tip_height(conn)?.ok_or(SqliteClientError::ChainHeightUnknown)?;
+    let addr_str = address.encode(params);
+    let key_scope = KeyScope::try_from(scope)?;
+    let diversifier_index = zip32::DiversifierIndex::from(address_index);
+
+    let address_id = conn.query_row(
+            "INSERT INTO addresses (
+                account_id,
+                key_scope,
+                diversifier_index_be,
+                address,
+                transparent_child_index,
+                cached_transparent_receiver_address,
+                exposed_at_height,
+                receiver_flags,
+                redeem_script
+            )
+            VALUES (
+                :account_id,
+                :key_scope,
+                :diversifier_index_be,
+                :address,
+                :transparent_child_index,
+                :cached_transparent_receiver_address,
+                :exposed_at_height,
+                :receiver_flags,
+                :redeem_script
+            )
+            ON CONFLICT (account_id, key_scope, diversifier_index_be)
+            DO UPDATE SET exposed_at_height = COALESCE(addresses.exposed_at_height, :exposed_at_height)
+            RETURNING id",
+            named_params![
+                ":account_id": account_id.0,
+                ":key_scope": key_scope.encode(),
+                ":diversifier_index_be": encode_diversifier_index_be(diversifier_index),
+                ":address": &addr_str,
+                ":transparent_child_index": address_index.index(),
+                ":cached_transparent_receiver_address": &addr_str,
+                ":exposed_at_height": u32::from(chain_tip),
+                ":receiver_flags": 0i64, // No specific flags for P2SH
+                ":redeem_script": redeem_script.to_bytes(),
+            ],
+            |row| row.get(0).map(AddressRef),
+        )?;
+
+    Ok(address_id)
+}
+
+/// Gets the next available address index for a multisig account.
+#[cfg(feature = "zip48-multisig")]
+pub(crate) fn get_next_multisig_address_index(
+    conn: &Connection,
+    account_id: AccountRef,
+    scope: TransparentKeyScope,
+) -> Result<NonHardenedChildIndex, SqliteClientError> {
+    let key_scope = KeyScope::try_from(scope)?;
+
+    let max_index: Option<u32> = conn
+        .query_row(
+            "SELECT MAX(transparent_child_index)
+                 FROM addresses
+                 WHERE account_id = :account_id
+                 AND key_scope = :key_scope
+                 AND redeem_script IS NOT NULL",
+            named_params![
+                ":account_id": account_id.0,
+                ":key_scope": key_scope.encode()
+            ],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+
+    let next_index = max_index.map_or(0, |i| i.saturating_add(1));
+
+    NonHardenedChildIndex::from_index(next_index).ok_or_else(|| {
+        SqliteClientError::CorruptedData(
+            "Next address index exceeds maximum non-hardened index".to_owned(),
+        )
+    })
 }
 
 #[cfg(test)]

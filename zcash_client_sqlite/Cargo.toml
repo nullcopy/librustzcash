@@ -148,6 +148,12 @@ transparent-key-import = [
   "zcash_client_backend/transparent-key-import"
 ]
 
+## Enables tracking of ZIP 48 transparent P2SH multisig wallets.
+zip48-multisig = [
+  "transparent-inputs",
+  "zcash_client_backend/zip48-multisig"
+]
+
 ## Enables import from legacy zcashd wallet.dat wallets.
 zcashd-compat = [
   "zcash_keys/zcashd-compat",

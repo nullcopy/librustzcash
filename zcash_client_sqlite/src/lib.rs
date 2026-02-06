@@ -1296,6 +1296,29 @@ impl<C: BorrowMut<rusqlite::Connection>, P: consensus::Parameters, CL: Clock, R:
         })
     }
 
+    #[cfg(feature = "zip48-multisig")]
+    fn import_account_zip48_multisig(
+        &mut self,
+        name: &str,
+        fvk: &transparent::zip48::FullViewingKey,
+        birthday: &AccountBirthday,
+        purpose: AccountPurpose,
+        key_source: Option<&str>,
+    ) -> Result<Self::AccountId, Self::Error> {
+        self.transactionally(|wdb| {
+            wallet::add_zip48_multisig_account(
+                wdb.conn.0,
+                &wdb.params,
+                name,
+                fvk,
+                birthday,
+                has_spend_key,
+        purpose: AccountPurpose,
+        key_source: Option<&str>,
+            )
+        })
+    }
+
     fn delete_account(&mut self, account_uuid: Self::AccountId) -> Result<(), Self::Error> {
         self.transactionally(|wdb| wallet::delete_account(wdb.conn.0, account_uuid))
     }
@@ -1544,6 +1567,35 @@ impl<C: BorrowMut<rusqlite::Connection>, P: consensus::Parameters, CL: Clock, R:
                 &wdb.params,
                 request.address(),
                 as_of_height,
+            )
+        })
+    }
+
+    #[cfg(feature = "zip48-multisig")]
+    fn get_next_zip48_multisig_address(
+        &mut self,
+        account: Self::AccountId,
+        scope: zip32::Scope,
+    ) -> Result<Option<TransparentAddressMetadata>, Self::Error> {
+        self.transactionally(|wdb| {
+            wallet::get_next_zip48_multisig_address(wdb.conn.0, &wdb.params, account, scope)
+        })
+    }
+
+    #[cfg(feature = "zip48-multisig")]
+    fn get_zip48_multisig_address_for_index(
+        &mut self,
+        account: Self::AccountId,
+        scope: zip32::Scope,
+        address_index: NonHardenedChildIndex,
+    ) -> Result<Option<TransparentAddressMetadata>, Self::Error> {
+        self.transactionally(|wdb| {
+            wallet::get_zip48_multisig_address_for_index(
+                wdb.conn.0,
+                &wdb.params,
+                account,
+                scope,
+                address_index,
             )
         })
     }

@@ -3246,33 +3246,6 @@ pub trait WalletWrite: WalletRead {
             "WalletWrite::notify_address_checked must be overridden for wallets to use the `transparent-inputs` feature"
         )
     }
-
-    /// Imports a ZIP 48 transparent multisig wallet for tracking.
-    ///
-    /// This creates a new account of kind `account_kind = 2` (transparent multisig) with the
-    /// provided full viewing key. The account can track received funds and derive addresses,
-    /// but spending requires external coordination (e.g., hardware wallets, PSBT workflow).
-    ///
-    /// # Parameters
-    /// - `name`: A human-readable name for the account.
-    /// - `fvk`: The ZIP 48 full viewing key containing threshold and participant public keys.
-    /// - `birthday`: The account birthday, used for determining scan start height.
-    /// - `has_spend_key`: Set to `true` if the wallet has access to a local signing key that
-    ///   matches one of the participants, `false` for view-only tracking (e.g., hardware wallet).
-    ///
-    /// Returns the identifier of the newly created account.
-    #[cfg(feature = "zip48-multisig")]
-    fn import_zip48_multisig_account(
-        &mut self,
-        _name: &str,
-        _fvk: &transparent::zip48::FullViewingKey,
-        _birthday: &AccountBirthday,
-        _has_spend_key: bool,
-    ) -> Result<Self::AccountId, Self::Error> {
-        unimplemented!(
-            "WalletWrite::import_transparent_multisig_account must be overridden for wallets to use the `zip48-multisig` feature"
-        )
-    }
 }
 
 /// This trait describes a capability for manipulating wallet note commitment trees.

@@ -85,6 +85,8 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use zcash_address::ZcashAddress;
+#[cfg(feature = "zip48-multisig")]
+use zcash_client_backend::wallet::TransparentAddressMetadata;
 use zcash_client_backend::{
     DecryptedOutput,
     data_api::{
@@ -4344,6 +4346,262 @@ pub mod testing {
 
         Ok(results)
     }
+}
+
+/// Creates a new transparent multisig account from a ZIP 48 full viewing key.
+#[cfg(feature = "zip48-multisig")]
+pub(crate) fn add_zip48_multisig_account<P: consensus::Parameters>(
+    conn: &rusqlite::Transaction<'_>,
+    params: &P,
+    account_name: &str,
+    fvk: &::transparent::zip48::FullViewingKey,
+    birthday: &AccountBirthday,
+    has_spend_key: bool,
+) -> Result<AccountUuid, SqliteClientError> {
+    merge this logic with add_account    use rusqlite::params;
+
+    let account_uuid = AccountUuid(uuid::Uuid::new_v4());
+
+    // Serialize the ZIP 48 FVK
+    // For now, we store the multipath descriptor as the serialized form
+    let fvk_bytes = fvk.multipath_descriptor(params).into_bytes();
+
+    // Create a placeholder UIVK for the account (required by schema)
+    // For multisig accounts, we don't have a traditional UIVK
+    let placeholder_uivk = format!("multisig:{}", account_uuid.0);
+
+    let birthday_sapling_tree_size = Some(birthday.sapling_frontier().tree_size());
+    #[cfg(feature = "orchard")]
+    let birthday_orchard_tree_size = Some(birthday.orchard_frontier().tree_size());
+    #[cfg(not(feature = "orchard"))]
+    let birthday_orchard_tree_size: Option<u64> = None;
+
+    conn.execute(
+        r#"
+        INSERT INTO accounts (
+            name,
+            uuid,
+            account_kind,
+            uivk,
+            birthday_height,
+            birthday_sapling_tree_size,
+            birthday_orchard_tree_size,
+            recover_until_height,
+            has_spend_key,
+            zip48_fvk
+        )
+        VALUES (
+            ?1, ?2, 2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+        )
+        "#,
+        params![
+            account_name,
+            account_uuid.0,
+            placeholder_uivk,
+            u32::from(birthday.height()),
+            birthday_sapling_tree_size,
+            birthday_orchard_tree_size,
+            birthday.recover_until().map(u32::from),
+            has_spend_key as i64,
+            fvk_bytes,
+        ],
+    )?;
+
+    // Update the scan queue for the new account
+    let birthday_height = birthday.height();
+    let recover_until = birthday.recover_until();
+
+    if let Some(recover_until) = recover_until {
+        scanning::insert_queue_entries(
+            conn,
+            [ScanRange::from_parts(
+                birthday_height..recover_until,
+                ScanPriority::Historic,
+            )]
+            .iter(),
+        )?;
+    }
+
+    Ok(account_uuid)
+}
+
+/// Derives and persists the next available address for a ZIP 48 transparent multisig account.
+#[cfg(feature = "zip48-multisig")]
+pub(crate) fn get_next_zip48_multisig_address<P: consensus::Parameters>(
+    conn: &rusqlite::Transaction<'_>,
+    params: &P,
+    account_uuid: AccountUuid,
+    scope: zip32::Scope,
+) -> Result<Option<TransparentAddressMetadata>, SqliteClientError> {
+    use ::transparent::keys::TransparentKeyScope;
+    use zcash_client_backend::wallet::{Exposure, GapMetadata, TransparentAddressMetadata};
+
+    let account =
+        get_account(conn, params, account_uuid)?.ok_or(SqliteClientError::AccountUnknown)?;
+
+    // Get the ZIP 48 FVK
+    let fvk_bytes = transparent::get_zip48_fvk(conn, account.id)?;
+    let fvk_bytes = match fvk_bytes {
+        Some(bytes) => bytes,
+        None => return Ok(None), // Not a multisig account
+    };
+
+    // Parse the FVK from the stored multipath descriptor
+    // This is a simplified approach - in production, proper serialization should be used
+    let fvk = parse_zip48_fvk(params, &fvk_bytes)?;
+
+    // Get the next available address index
+    let t_scope = TransparentKeyScope::from(scope);
+    let address_index = transparent::get_next_multisig_address_index(conn, account.id, t_scope)?;
+
+    // Derive the address and redeem script
+    let (address, redeem_script) = fvk.derive_address(scope, address_index);
+
+    // Insert the address into the database
+    transparent::insert_multisig_address(
+        conn,
+        params,
+        account.id,
+        t_scope,
+        address_index,
+        &address,
+        &redeem_script,
+    )?;
+
+    let chain_tip = chain_tip_height(conn)?.ok_or(SqliteClientError::ChainHeightUnknown)?;
+
+    Ok(Some(TransparentAddressMetadata::zip48_multisig(
+        t_scope,
+        address_index,
+        redeem_script,
+        Exposure::Exposed {
+            at_height: chain_tip,
+            gap_metadata: GapMetadata::DerivationUnknown,
+        },
+        None,
+    )))
+}
+
+/// Derives and persists an address at a specific index for a ZIP 48 transparent multisig account.
+#[cfg(feature = "zip48-multisig")]
+pub(crate) fn get_zip48_multisig_address_for_index<P: consensus::Parameters>(
+    conn: &rusqlite::Transaction<'_>,
+    params: &P,
+    account_uuid: AccountUuid,
+    scope: zip32::Scope,
+    address_index: ::transparent::keys::NonHardenedChildIndex,
+) -> Result<Option<TransparentAddressMetadata>, SqliteClientError> {
+    use ::transparent::keys::TransparentKeyScope;
+    use zcash_client_backend::wallet::{Exposure, GapMetadata, TransparentAddressMetadata};
+
+    let account =
+        get_account(conn, params, account_uuid)?.ok_or(SqliteClientError::AccountUnknown)?;
+
+    // Get the ZIP 48 FVK
+    let fvk_bytes = transparent::get_zip48_fvk(conn, account.id)?;
+    let fvk_bytes = match fvk_bytes {
+        Some(bytes) => bytes,
+        None => return Ok(None), // Not a multisig account
+    };
+
+    // Parse the FVK
+    let fvk = parse_zip48_fvk(params, &fvk_bytes)?;
+
+    // Derive the address and redeem script
+    let (address, redeem_script) = fvk.derive_address(scope, address_index);
+
+    // Insert the address into the database
+    let t_scope = TransparentKeyScope::from(scope);
+    transparent::insert_multisig_address(
+        conn,
+        params,
+        account.id,
+        t_scope,
+        address_index,
+        &address,
+        &redeem_script,
+    )?;
+
+    let chain_tip = chain_tip_height(conn)?.ok_or(SqliteClientError::ChainHeightUnknown)?;
+
+    Ok(Some(TransparentAddressMetadata::zip48_multisig(
+        t_scope,
+        address_index,
+        redeem_script,
+        Exposure::Exposed {
+            at_height: chain_tip,
+            gap_metadata: GapMetadata::DerivationUnknown,
+        },
+        None,
+    )))
+}
+
+/// Parses a ZIP 48 FullViewingKey from its stored representation.
+///
+/// Currently the FVK is stored as a multipath descriptor string. This function
+/// parses it back into the FullViewingKey type.
+#[cfg(feature = "zip48-multisig")]
+fn parse_zip48_fvk<P: consensus::Parameters>(
+    params: &P,
+    fvk_bytes: &[u8],
+) -> Result<::transparent::zip48::FullViewingKey, SqliteClientError> {
+    use ::transparent::zip48::{AccountPubKey, FullViewingKey};
+
+    // The stored format is the multipath descriptor string
+    let descriptor = std::str::from_utf8(fvk_bytes)
+        .map_err(|_| SqliteClientError::CorruptedData("Invalid UTF-8 in ZIP 48 FVK".to_owned()))?;
+
+    // Parse the descriptor to extract the key information
+    // Format: sh(sortedmulti(threshold,[origin]xpub/<0;1>/*,...))
+    //
+    // This is a simplified parser - a production implementation would use a proper
+    // descriptor parser from zcash_script or similar.
+
+    // Extract threshold from "sortedmulti(N,"
+    let threshold_start = descriptor
+        .find("sortedmulti(")
+        .ok_or_else(|| SqliteClientError::CorruptedData("Invalid descriptor format".to_owned()))?
+        + "sortedmulti(".len();
+
+    let threshold_end = descriptor[threshold_start..]
+        .find(',')
+        .ok_or_else(|| SqliteClientError::CorruptedData("Invalid descriptor format".to_owned()))?
+        + threshold_start;
+
+    let threshold: u8 = descriptor[threshold_start..threshold_end]
+        .parse()
+        .map_err(|_| SqliteClientError::CorruptedData("Invalid threshold".to_owned()))?;
+
+    // Extract the key expressions between the first comma and the closing "))"
+    let keys_start = threshold_end + 1;
+    let keys_end = descriptor
+        .rfind("))")
+        .ok_or_else(|| SqliteClientError::CorruptedData("Invalid descriptor format".to_owned()))?;
+
+    let keys_str = &descriptor[keys_start..keys_end];
+
+    // Split by "/<0;1>/*," to get individual key info expressions
+    // Each key looks like: [origin]xpub/<0;1>/*
+    let mut key_info = Vec::new();
+    for key_expr in keys_str.split("/<0;1>/*") {
+        let trimmed = key_expr.trim().trim_start_matches(',').trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some(pubkey) = AccountPubKey::parse_key_info_expression(trimmed, params) {
+            key_info.push(pubkey);
+        }
+    }
+
+    if key_info.is_empty() {
+        return Err(SqliteClientError::CorruptedData(
+            "No valid keys found in descriptor".to_owned(),
+        ));
+    }
+
+    FullViewingKey::standard(threshold, key_info)
+        .map_err(|e| SqliteClientError::CorruptedData(format!("Invalid ZIP 48 FVK: {:?}", e)))
 }
 
 #[cfg(test)]
