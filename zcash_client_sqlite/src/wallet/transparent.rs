@@ -2170,7 +2170,7 @@ mod tests {
 
     #[test]
     fn put_received_transparent_utxo() {
-        zcash_client_backend::data_api::testing::transparent::put_received_transparent_utxo(
+        zcash_client_backend::data_api::testing::transparent::put_received_transparent_utxo_derived(
             TestDbFactory::default(),
         );
     }
@@ -2185,7 +2185,7 @@ mod tests {
 
     #[test]
     fn transparent_balance_spendability() {
-        zcash_client_backend::data_api::testing::transparent::transparent_balance_spendability(
+        zcash_client_backend::data_api::testing::transparent::transparent_balance_spendability_derived(
             TestDbFactory::default(),
             BlockCache::new(),
         );
@@ -2197,6 +2197,47 @@ mod tests {
             TestDbFactory::default(),
             BlockCache::new(),
             GapLimits::default(),
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "zip-48")]
+    fn put_received_transparent_utxo_zip48() {
+        zcash_client_backend::data_api::testing::transparent::put_received_transparent_utxo_zip48(
+            TestDbFactory::default(),
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "zip-48")]
+    fn transparent_balance_spendability_zip48() {
+        zcash_client_backend::data_api::testing::transparent::transparent_balance_spendability_zip48(
+            TestDbFactory::default(),
+            BlockCache::new(),
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "zip-48")]
+    fn import_account_zip48_multisig() {
+        zcash_client_backend::data_api::testing::transparent::import_account_zip48_multisig(
+            TestDbFactory::default(),
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "zip-48")]
+    fn get_next_zip48_multisig_address() {
+        zcash_client_backend::data_api::testing::transparent::get_next_zip48_multisig_address(
+            TestDbFactory::default(),
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "zip-48")]
+    fn get_zip48_multisig_address_for_index() {
+        zcash_client_backend::data_api::testing::transparent::get_zip48_multisig_address_for_index(
+            TestDbFactory::default(),
         );
     }
 

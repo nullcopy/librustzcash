@@ -430,6 +430,8 @@ pub(crate) fn add_account<P: consensus::Parameters>(
             purpose: AccountPurpose::ViewOnly,
             key_source,
         } => (None, false, key_source),
+        #[cfg(feature = "zip-48")]
+        AccountSource::Zip48 { .. } => (None, false, &None),
     };
 
     #[cfg(feature = "orchard")]

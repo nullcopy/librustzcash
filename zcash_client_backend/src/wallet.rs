@@ -778,6 +778,25 @@ impl TransparentAddressMetadata {
         }
     }
 
+    /// Returns a [`TransparentAddressMetadata`] for a ZIP 48 transparent multisig address derived
+    /// from a [`::transparent::zip48::FullViewingKey`].
+    #[cfg(feature = "zip-48")]
+    pub fn zip48_multisig(
+        scope: TransparentKeyScope,
+        address_index: NonHardenedChildIndex,
+        exposure: Exposure,
+        next_check_time: Option<SystemTime>,
+    ) -> Self {
+        Self {
+            source: TransparentAddressSource::Zip48 {
+                scope,
+                address_index,
+            },
+            exposure,
+            next_check_time,
+        }
+    }
+
     /// Returns the source metadata for the address.
     pub fn source(&self) -> &TransparentAddressSource {
         &self.source
@@ -842,6 +861,13 @@ pub enum TransparentAddressSource {
     /// This variant provides the public key directly.
     #[cfg(feature = "transparent-key-import")]
     Standalone(secp256k1::PublicKey),
+    /// ZIP 48 transparent multisig derivation information for the address below account
+    /// pubkey level, i.e. the `change` and `index` elements of the path.
+    #[cfg(feature = "zip-48")]
+    Zip48 {
+        scope: TransparentKeyScope,
+        address_index: NonHardenedChildIndex,
+    },
 }
 
 #[cfg(feature = "transparent-inputs")]
@@ -853,6 +879,8 @@ impl TransparentAddressSource {
             TransparentAddressSource::Derived { scope, .. } => Some(*scope),
             #[cfg(feature = "transparent-key-import")]
             TransparentAddressSource::Standalone(_) => None,
+            #[cfg(feature = "zip-48")]
+            TransparentAddressSource::Zip48 { scope, .. } => Some(*scope),
         }
     }
 
@@ -863,6 +891,8 @@ impl TransparentAddressSource {
             TransparentAddressSource::Derived { address_index, .. } => Some(*address_index),
             #[cfg(feature = "transparent-key-import")]
             TransparentAddressSource::Standalone(_) => None,
+            #[cfg(feature = "zip-48")]
+            TransparentAddressSource::Zip48 { address_index, .. } => Some(*address_index),
         }
     }
 }
