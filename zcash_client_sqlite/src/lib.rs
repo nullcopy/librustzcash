@@ -1299,6 +1299,29 @@ impl<C: BorrowMut<rusqlite::Connection>, P: consensus::Parameters, CL: Clock, R:
         })
     }
 
+    #[cfg(feature = "zip-48")]
+    fn import_account_zip48_multisig(
+        &mut self,
+        name: &str,
+        fvk: &transparent::zip48::FullViewingKey,
+        birthday: &AccountBirthday,
+        key_source: Option<&str>,
+    ) -> Result<Self::Account, Self::Error> {
+        self.transactionally(|wdb| {
+            wallet::add_account(
+                wdb.conn.0,
+                &wdb.params,
+                name,
+                &AccountSource::Zip48 {
+                    key_source: key_source.map(str::to_string),
+                },
+                wallet::ViewingKey::Zip48Full(Box::new(fvk.clone())),
+                birthday,
+                &wdb.gap_limits,
+            )
+        })
+    }
+
     fn delete_account(&mut self, account_uuid: Self::AccountId) -> Result<(), Self::Error> {
         self.transactionally(|wdb| wallet::delete_account(wdb.conn.0, account_uuid))
     }
@@ -1353,6 +1376,12 @@ impl<C: BorrowMut<rusqlite::Connection>, P: consensus::Parameters, CL: Clock, R:
     ) -> Result<Option<UnifiedAddress>, Self::Error> {
         if let Some(account) = self.get_account(account)? {
             use zcash_keys::keys::AddressGenerationError::*;
+
+            #[cfg(feature = "zip-48")]
+            if matches!(account.source(), AccountSource::Zip48 { .. }) {
+                return Err(SqliteClientError::Zip48UnsupportedOperation);
+            }
+
             // Reject requests that require a transparent receiver; transparent addresses
             // must be generated via `get_transparent_address_for_index`.
             let requirements = account.uivk().receiver_requirements(request)?;
@@ -1403,6 +1432,11 @@ impl<C: BorrowMut<rusqlite::Connection>, P: consensus::Parameters, CL: Clock, R:
                     }
                 };
 
+            #[cfg(feature = "zip-48")]
+            if matches!(account.source(), AccountSource::Zip48 { .. }) {
+                return Err(SqliteClientError::Zip48UnsupportedOperation);
+            }
+
             let diversifier_index = DiversifierIndex::from(address_index);
             let request = UnifiedAddressRequest::unsafe_custom(Allow, Allow, Require);
 
@@ -1443,6 +1477,41 @@ impl<C: BorrowMut<rusqlite::Connection>, P: consensus::Parameters, CL: Clock, R:
             );
 
             Ok(Some((transparent_addr, meta)))
+        })
+    }
+
+    #[cfg(feature = "zip-48")]
+    fn get_next_zip48_multisig_address(
+        &mut self,
+        account: Self::AccountId,
+        scope: zip32::Scope,
+    ) -> Result<Option<(TransparentAddress, TransparentAddressMetadata)>, Self::Error> {
+        self.transactionally(|wdb| {
+            wallet::get_next_available_zip48_multisig_address(
+                wdb.conn.0,
+                &wdb.params,
+                &wdb.gap_limits,
+                account,
+                scope,
+            )
+        })
+    }
+
+    #[cfg(feature = "zip-48")]
+    fn get_zip48_multisig_address_for_index(
+        &mut self,
+        account: Self::AccountId,
+        scope: zip32::Scope,
+        address_index: NonHardenedChildIndex,
+    ) -> Result<Option<(TransparentAddress, TransparentAddressMetadata)>, Self::Error> {
+        self.transactionally(|wdb| {
+            wallet::get_zip48_multisig_address_for_index(
+                wdb.conn.0,
+                &wdb.params,
+                account,
+                scope,
+                address_index,
+            )
         })
     }
 

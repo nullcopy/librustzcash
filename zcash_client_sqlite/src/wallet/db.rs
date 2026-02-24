@@ -35,9 +35,10 @@ use crate::wallet::scanning::priority_code;
 ///   stable for the lifetime of the wallet database, but is not expected or required to be
 ///   stable across wallet restores and it should not be stored in external backup formats.
 /// - `account_kind`: 0 for accounts derived from a mnemonic seed, 1 for imported accounts
-///   for which derivation path information may not be available. This column may be removed in the
-///   future; the distinction between whether an account is derived or imported is better
-///   represented by the presence or absence of HD seed fingerprint and HD account index data.
+///   for which derivation path information may not be available, 2 for ZIP 48 transparent multisig
+///   accounts. This column may be removed in the future; the distinction between whether an account
+///   is derived or imported is better represented by the presence or absence of HD seed fingerprint
+///   and HD account index data.
 /// - `hd_seed_fingerprint`: If this account contains funds in keys obtained via HD derivation,
 ///   the ZIP 32 fingerprint of the root HD seed. If this column is non-null, `hd_account_index`
 ///   must also be non-null.
@@ -66,6 +67,9 @@ use crate::wallet::scanning::priority_code;
 ///   period (to keep the scan progress percentage accurate to what actually needs scanning).
 /// - `has_spend_key`: A boolean flag (0 or 1) indicating whether the application that embeds
 ///   this wallet database has access to spending key(s) for the account.
+/// - `zip48_fvk`: For ZIP 48 transparent multisig accounts (account_kind = 2), the full viewing
+///   key serialized as a BIP 389 multipath descriptor template. This contains the threshold and
+///   all information needed for address derivation. Must be null for non-multisig accounts.
 /// - `zcash_legacy_address_index`: This column is only potentially populated for wallets imported
 ///   from a `zcashd` `wallet.dat` file, for "standalone" Sapling addresses (each of which
 ///   corresponds to an independent account) derived after the introduction of mnemonic seed
@@ -85,7 +89,7 @@ CREATE TABLE "accounts" (
     hd_seed_fingerprint BLOB,
     hd_account_index INTEGER,
     ufvk TEXT,
-    uivk TEXT NOT NULL,
+    uivk TEXT,
     orchard_fvk_item_cache BLOB,
     sapling_fvk_item_cache BLOB,
     p2pkh_fvk_item_cache BLOB,
@@ -95,17 +99,34 @@ CREATE TABLE "accounts" (
     recover_until_height INTEGER,
     has_spend_key INTEGER NOT NULL DEFAULT 1,
     zcashd_legacy_address_index INTEGER NOT NULL DEFAULT -1,
+    zip48_fvk BLOB,
     CHECK (
       (
         account_kind = 0
         AND hd_seed_fingerprint IS NOT NULL
         AND hd_account_index IS NOT NULL
         AND ufvk IS NOT NULL
+        AND uivk IS NOT NULL
+        AND zip48_fvk IS NULL
       )
       OR
       (
         account_kind = 1
         AND (hd_seed_fingerprint IS NULL) = (hd_account_index IS NULL)
+        AND uivk IS NOT NULL
+        AND zip48_fvk IS NULL
+      )
+      OR
+      (
+        account_kind = 2
+        AND zip48_fvk IS NOT NULL
+        AND uivk IS NULL
+        AND hd_seed_fingerprint IS NULL
+        AND hd_account_index IS NULL
+        AND ufvk IS NULL
+        AND orchard_fvk_item_cache IS NULL
+        AND sapling_fvk_item_cache IS NULL
+        AND p2pkh_fvk_item_cache IS NULL
       )
     )
 )"#;
