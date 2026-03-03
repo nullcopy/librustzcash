@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Erc20Error","Erc55ValidationFailureReason","Error","NativeTransferError","ParseError","ValidationError"]};

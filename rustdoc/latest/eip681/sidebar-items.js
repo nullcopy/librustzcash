@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["TransactionRequest"],"mod":["error","parse"],"struct":["Erc20Request","NativeRequest","U256"]};
