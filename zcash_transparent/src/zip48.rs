@@ -316,6 +316,12 @@ impl FullViewingKey {
 
     /// Derives the scoped P2SH address for this account at the given index, along with
     /// the corresponding redeem script.
+    ///
+    /// The `scope` parameter uses [`zip32::Scope`] rather than
+    /// [`TransparentKeyScope`] because [BIP 388] only defines wallet policies
+    /// for change-level indices 0 and 1.
+    ///
+    /// [BIP 388]: https://github.com/bitcoin/bips/blob/master/bip-0388.mediawiki
     pub fn derive_address(
         &self,
         scope: zip32::Scope,
