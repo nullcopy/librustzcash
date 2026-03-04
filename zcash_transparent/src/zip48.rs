@@ -14,7 +14,7 @@ use zip32::AccountId;
 
 use crate::{
     address::TransparentAddress,
-    keys::{NonHardenedChildIndex, TransparentKeyScope},
+    keys::{CoinType, NonHardenedChildIndex, TransparentKeyScope},
 };
 
 const BIP_48_PURPOSE: fn() -> ChildNumber = || ChildNumber::new(48, true).expect("valid");
@@ -46,20 +46,20 @@ impl AccountPrivKey {
         seed: &[u8],
         account: AccountId,
     ) -> Result<AccountPrivKey, bip32::Error> {
-        Self::from_seed_with_coin_type(seed, params.coin_type(), account)
+        Self::from_seed_with_coin_type(seed, CoinType::from_u32(params.coin_type()), account)
     }
 
     /// Internal helper constructor that doesn't depend on [`consensus::Parameters`].
     fn from_seed_with_coin_type(
         seed: &[u8],
-        coin_type: u32,
+        coin_type: CoinType,
         account: AccountId,
     ) -> Result<AccountPrivKey, bip32::Error> {
         let root = ExtendedPrivateKey::new(seed)?;
         let fingerprint = root.public_key().fingerprint();
         let derivation = vec![
             BIP_48_PURPOSE(),
-            ChildNumber::new(coin_type, true)?,
+            ChildNumber::new(coin_type.into_u32(), true)?,
             ChildNumber::new(account.into(), true)?,
             ZCASH_P2SH_SCRIPT_TYPE(),
         ];
@@ -152,14 +152,16 @@ impl AccountPubKey {
     }
 
     /// Returns the ZIP 48 coin type and account ID for this public key.
-    fn coin_type_and_account(&self) -> (u32, AccountId) {
+    pub fn coin_type_and_account(&self) -> (CoinType, AccountId) {
         // By construction, the derivation is always a ZIP 48 path.
         let derivation = self.origin.derivation();
         (
-            derivation
-                .get(1)
-                .expect("valid ZIP 48 derivation path")
-                .index(),
+            CoinType::from_u32(
+                derivation
+                    .get(1)
+                    .expect("valid ZIP 48 derivation path")
+                    .index(),
+            ),
             AccountId::try_from(
                 derivation
                     .get(2)
@@ -258,7 +260,7 @@ impl FullViewingKey {
     }
 
     /// Returns the ZIP 48 coin type and account ID for this full viewing key.
-    fn coin_type_and_account(&self) -> (u32, AccountId) {
+    pub fn coin_type_and_account(&self) -> (CoinType, AccountId) {
         // By construction of `Self`, all keys in `key_info` have the same derivation
         // information, so we only need to look at the first.
         self.key_info.first().coin_type_and_account()

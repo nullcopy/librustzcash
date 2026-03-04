@@ -18,6 +18,37 @@ use {
     zip32::AccountId,
 };
 
+/// A [SLIP 44] coin type code.
+///
+/// [SLIP 44]: https://github.com/satoshilabs/slips/blob/master/slip-0044.md
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CoinType(u32);
+
+impl CoinType {
+    /// Wraps a raw coin type code.
+    pub const fn from_u32(v: u32) -> Self {
+        CoinType(v)
+    }
+
+    /// Returns the raw coin type code.
+    pub const fn into_u32(self) -> u32 {
+        self.0
+    }
+}
+
+impl From<u32> for CoinType {
+    fn from(v: u32) -> Self {
+        CoinType(v)
+    }
+}
+
+impl From<CoinType> for u32 {
+    fn from(v: CoinType) -> u32 {
+        v.0
+    }
+}
+
 /// The scope of a transparent key.
 ///
 /// This type can represent [`zip32`] internal and external scopes, as well as custom scopes that

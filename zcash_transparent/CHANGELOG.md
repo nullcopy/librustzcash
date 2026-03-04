@@ -21,6 +21,7 @@ workspace.
 - `zcash_transparent::builder::TransparentInputInfo::{from_parts, spend_info}`
 - `zcash_transparent::builder::Builder::add_p2pkh_input`
 - `impl Hash for zcash_transparent::keys::TransparentKeyScope`
+- `zcash_transparent::keys::CoinType`
 
 ### Changed
 - MSRV is now 1.85.1.
@@ -32,6 +33,8 @@ workspace.
 - `zcash_transparent::builder::Builder::add_input` now takes a `TransparentInputInfo`
   instead of its constituent parts. Use `Builder::add_p2pkh_input` if you need the
   previous API.
+- Exposed `zcash_transparent::zip48::AccountPubKey::coin_type_and_account()`
+- Exposed `zcash_transparent::zip48::FullViewingKey::coin_type_and_account()`
 
 ## [0.6.3] - 2025-12-17
 
