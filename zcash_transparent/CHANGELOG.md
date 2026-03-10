@@ -24,6 +24,7 @@ workspace.
 - `zcash_transparent::keys::CoinType`
 - `impl PartialOrd for zcash_transparent::zip48::AccountPubkey`
 - `impl Ord for zcash_transparent::zip48::AccountPubkey`
+- `zcash_transparent::zip48::parse_multipath_descriptor()`
 
 ### Changed
 - MSRV is now 1.85.1.
