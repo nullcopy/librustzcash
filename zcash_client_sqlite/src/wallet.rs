@@ -138,11 +138,15 @@ use crate::{
 use {
     crate::GapLimits,
     ::transparent::{
+        address::TransparentAddress,
         bundle::{OutPoint, TxOut},
         keys::{NonHardenedChildIndex, TransparentKeyScope},
     },
     std::collections::HashSet,
-    zcash_client_backend::{data_api::DecryptedTransaction, wallet::WalletTransparentOutput},
+    zcash_client_backend::{
+        data_api::DecryptedTransaction,
+        wallet::{TransparentAddressMetadata, WalletTransparentOutput},
+    },
 };
 
 #[cfg(feature = "orchard")]
@@ -831,13 +835,12 @@ pub(crate) fn import_standalone_transparent_pubkey<P: consensus::Parameters>(
     Ok(())
 }
 
-pub(crate) fn get_next_available_address<P: consensus::Parameters, C: Clock>(
+pub(crate) fn get_next_shielded_address<P: consensus::Parameters, C: Clock>(
     conn: &rusqlite::Transaction,
     params: &P,
     clock: &C,
     account_uuid: AccountUuid,
     request: UnifiedAddressRequest,
-    #[cfg(feature = "transparent-inputs")] gap_limits: &GapLimits,
 ) -> Result<Option<(UnifiedAddress, DiversifierIndex)>, SqliteClientError> {
     let account: Account = match get_account(conn, params, account_uuid)? {
         Some(account) => account,
@@ -849,60 +852,17 @@ pub(crate) fn get_next_available_address<P: consensus::Parameters, C: Clock>(
     // This will also ensure that the provided request can be satisfied by the account's UIVK
     let requirements = account.uivk().receiver_requirements(request)?;
 
-    let (addr, diversifier_index) = if requirements.p2pkh() == ReceiverRequirement::Require {
-        #[cfg(not(feature = "transparent-inputs"))]
-        {
-            return Err(SqliteClientError::AddressGeneration(
-                AddressGenerationError::ReceiverTypeNotSupported(
-                    zcash_address::unified::Typecode::P2pkh,
-                ),
-            ));
-        }
+    // Reject requests that require a transparent receiver; transparent addresses
+    // must be generated via `get_next_transparent_address`.
+    if requirements.p2pkh() == ReceiverRequirement::Require {
+        return Err(SqliteClientError::AddressGeneration(
+            AddressGenerationError::ReceiverTypeNotSupported(
+                zcash_address::unified::Typecode::P2pkh,
+            ),
+        ));
+    }
 
-        // If a p2pkh receiver is required, return the first un-exposed address from within the
-        // transparent gap limit.
-        #[cfg(feature = "transparent-inputs")]
-        {
-            use ReceiverRequirement::*;
-            // First, ensure that we have pre-generated as many addresses as we can.
-            transparent::generate_gap_addresses(
-                conn,
-                params,
-                gap_limits,
-                account.internal_id(),
-                TransparentKeyScope::EXTERNAL,
-                UnifiedAddressRequest::unsafe_custom(Allow, Allow, Require),
-                true,
-            )?;
-
-            // Select indices from the transparent gap limit that are available for use as
-            // diversifier indices.
-            let (gap_start, addrs) = transparent::select_addrs_to_reserve(
-                conn,
-                params,
-                account.internal_id(),
-                TransparentKeyScope::EXTERNAL,
-                gap_limits.external(),
-                gap_limits
-                    .external()
-                    .try_into()
-                    .expect("gap limit fits in usize"),
-            )?;
-
-            // Find the first index that generates an address conforming to the request.
-            addrs
-                .iter()
-                .find_map(|(_, _, meta)| {
-                    meta.address_index()
-                        .map(DiversifierIndex::from)
-                        .and_then(|j| account.uivk().address(j, request).ok().map(|ua| (ua, j)))
-                })
-                .ok_or(SqliteClientError::ReachedGapLimit(
-                    TransparentKeyScope::EXTERNAL,
-                    gap_start.index() + gap_limits.external(),
-                ))?
-        }
-    } else {
+    let (addr, diversifier_index) = {
         // compute a base diversifier index from the timestamp
         let mut j = DiversifierIndex::from(
             clock
@@ -961,6 +921,49 @@ pub(crate) fn get_next_available_address<P: consensus::Parameters, C: Clock>(
     )?;
 
     Ok(Some((addr, diversifier_index)))
+}
+
+#[cfg(feature = "transparent-inputs")]
+pub(crate) fn get_next_transparent_address<P: consensus::Parameters>(
+    conn: &rusqlite::Transaction,
+    params: &P,
+    account_uuid: AccountUuid,
+    gap_limits: &GapLimits,
+) -> Result<Option<(TransparentAddress, TransparentAddressMetadata)>, SqliteClientError> {
+    use ReceiverRequirement::*;
+
+    let account: Account = match get_account(conn, params, account_uuid)? {
+        Some(account) => account,
+        None => {
+            return Ok(None);
+        }
+    };
+
+    // Ensure we have pre-generated as many addresses as we can within the gap limit.
+    transparent::generate_gap_addresses(
+        conn,
+        params,
+        gap_limits,
+        account.internal_id(),
+        TransparentKeyScope::EXTERNAL,
+        UnifiedAddressRequest::unsafe_custom(Allow, Allow, Require),
+        true,
+    )?;
+
+    // Reserve the next available transparent address.
+    let reserved = transparent::reserve_next_n_addresses(
+        conn,
+        params,
+        account.internal_id(),
+        TransparentKeyScope::EXTERNAL,
+        gap_limits.external(),
+        1,
+    )?;
+
+    Ok(reserved
+        .into_iter()
+        .next()
+        .map(|(_, addr, meta)| (addr, meta)))
 }
 
 pub(crate) fn list_addresses<P: consensus::Parameters>(

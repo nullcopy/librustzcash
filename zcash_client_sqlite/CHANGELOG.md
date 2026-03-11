@@ -29,6 +29,10 @@ workspace.
 ### Changed
 - Migrated to `orchard 0.12`, `sapling-crypto 0.6`.
 - `zcash_client_sqlite::error::SqliteClientError` has added variant `GapAddresses`.
+- The `WalletWrite` implementation for `WalletDb` now implements the split address
+  methods: `get_next_shielded_address` + `get_next_transparent_address` (replacing
+  `get_next_available_address`), and `get_shielded_address_for_index` +
+  `get_transparent_address_for_index` (replacing `get_address_for_index`).
 
 ### Removed
 - `zcash_client_sqlite::GapLimits` use `zcash_keys::keys::transparent::GapLimits` instead.

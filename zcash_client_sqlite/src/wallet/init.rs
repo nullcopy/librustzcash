@@ -1460,12 +1460,25 @@ mod tests {
             ))
         );
 
-        for tv in &test_vectors::UNIFIED[..3] {
+        for (i, tv) in test_vectors::UNIFIED[..3].iter().enumerate() {
             if let Some(Address::Unified(tvua)) =
                 Address::decode(&Network::MainNetwork, tv.unified_addr)
             {
                 // hardcoded with knowledge of test vectors
                 let ua_request = UnifiedAddressRequest::unsafe_custom(Omit, Require, Require);
+
+                // For iterations after the first, explicitly generate the address at
+                // the expected diversifier index (the first is created by create_account).
+                if i > 0 {
+                    db_data
+                        .get_shielded_address_for_index(
+                            account_id,
+                            DiversifierIndex::from(tv.diversifier_index),
+                            ua_request,
+                        )
+                        .unwrap()
+                        .expect("generated address at expected index");
+                }
 
                 let (ua, di) = wallet::get_last_generated_address_matching(
                     &db_data.conn,
@@ -1478,17 +1491,12 @@ mod tests {
                     },
                 )
                 .unwrap()
-                .expect("create_account generated the first address");
+                .expect("address should exist at expected index");
                 assert_eq!(DiversifierIndex::from(tv.diversifier_index), di);
                 assert_eq!(tvua.transparent(), ua.transparent());
                 assert_eq!(tvua.sapling(), ua.sapling());
                 #[cfg(not(feature = "orchard"))]
                 assert_eq!(tv.unified_addr, ua.encode(&Network::MainNetwork));
-
-                db_data
-                    .get_next_available_address(account_id, ua_request)
-                    .unwrap()
-                    .expect("get_next_available_address generated an address");
             } else {
                 panic!(
                     "{} did not decode to a valid unified address",

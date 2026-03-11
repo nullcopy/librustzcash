@@ -98,6 +98,8 @@ pub enum Error {
     #[cfg(feature = "transparent-inputs")]
     #[error("Transparent derivation: {0}")]
     TransparentDerivation(bip32::Error),
+    #[error("Transparent address is not supported")]
+    TransparentNotSupported,
     #[error("Unsupported proto version: {1} (expected {0})")]
     UnsupportedProtoVersion(u32, u32),
     #[error("Error converting nullifier from slice: {0}")]

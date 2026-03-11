@@ -95,6 +95,10 @@ workspace.
   than or equal to the provided minimum value. This fixes an inconsistency
   in the various tests related to notes having no economic value in
   `zcash_client_sqlite`.
+- Split `WalletWrite::get_next_available_address` into
+  `WalletWrite::{get_next_shielded_address, get_next_transparent_address}`
+- Split `WalletWrite::get_address_for_index` into
+  `WalletWrite::{get_shielded_address_for_index, get_transparent_address_for_index}`
 
 ### Removed
 - `zcash_client_backend::data_api::testing::transparent::GapLimits` use

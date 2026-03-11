@@ -586,13 +586,13 @@ pub(crate) fn reserve_next_n_addresses<P: consensus::Parameters>(
 /// The provided [`UnifiedAddressRequest`] is used to pre-generate unified addresses that correspond
 /// to each transparent address index in question; such unified addresses need not internally
 /// contain a transparent receiver, and may be overwritten when these addresses are exposed via the
-/// [`WalletWrite::get_next_available_address`] or [`WalletWrite::get_address_for_index`] methods.
+/// [`WalletWrite::get_next_shielded_address`] or [`WalletWrite::get_shielded_address_for_index`] methods.
 /// If no request is provided, each address so generated will contain a receiver for each possible
 /// pool: i.e., a recevier for each data item in the account's UFVK or UIVK where the transparent
 /// child index is valid.
 ///
-/// [`WalletWrite::get_next_available_address`]: zcash_client_backend::data_api::WalletWrite::get_next_available_address
-/// [`WalletWrite::get_address_for_index`]: zcash_client_backend::data_api::WalletWrite::get_address_for_index
+/// [`WalletWrite::get_next_shielded_address`]: zcash_client_backend::data_api::WalletWrite::get_next_shielded_address
+/// [`WalletWrite::get_shielded_address_for_index`]: zcash_client_backend::data_api::WalletWrite::get_shielded_address_for_index
 pub(crate) fn generate_address_range<P: consensus::Parameters>(
     conn: &rusqlite::Transaction,
     params: &P,
@@ -692,13 +692,13 @@ pub(crate) fn store_address_range<P: consensus::Parameters>(
 /// The provided [`UnifiedAddressRequest`] is used to pre-generate unified addresses that correspond
 /// to the transparent address index in question; such unified addresses need not internally
 /// contain a transparent receiver, and may be overwritten when these addresses are exposed via the
-/// [`WalletWrite::get_next_available_address`] or [`WalletWrite::get_address_for_index`] methods.
+/// [`WalletWrite::get_next_shielded_address`] or [`WalletWrite::get_shielded_address_for_index`] methods.
 /// If no request is provided, each address so generated will contain a receiver for each possible
 /// pool: i.e., a recevier for each data item in the account's UFVK or UIVK where the transparent
 /// child index is valid.
 ///
-/// [`WalletWrite::get_next_available_address`]: zcash_client_backend::data_api::WalletWrite::get_next_available_address
-/// [`WalletWrite::get_address_for_index`]: zcash_client_backend::data_api::WalletWrite::get_address_for_index
+/// [`WalletWrite::get_next_shielded_address`]: zcash_client_backend::data_api::WalletWrite::get_next_shielded_address
+/// [`WalletWrite::get_shielded_address_for_index`]: zcash_client_backend::data_api::WalletWrite::get_shielded_address_for_index
 pub(crate) fn generate_gap_addresses<P: consensus::Parameters>(
     conn: &rusqlite::Transaction,
     params: &P,

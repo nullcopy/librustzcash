@@ -2991,46 +2991,72 @@ pub trait WalletWrite: WalletRead {
         )
     }
 
-    /// Generates, persists, and marks as exposed the next available diversified address for the
-    /// specified account, given the current addresses known to the wallet.
+    /// Generates, persists, and marks as exposed the next available diversified shielded address
+    /// for the specified account, given the current addresses known to the wallet.
     ///
     /// Returns `Ok(None)` if the account identifier does not correspond to a known
     /// account.
-    fn get_next_available_address(
+    /// Returns `Err()` if request requires a transparent address
+    /// Returns `Err()` for account types which do not support shielded addresses
+    fn get_next_shielded_address(
         &mut self,
         account: Self::AccountId,
         request: UnifiedAddressRequest,
     ) -> Result<Option<(UnifiedAddress, DiversifierIndex)>, Self::Error>;
 
-    /// Generates, persists, and marks as exposed a diversified address for the specified account
-    /// at the provided diversifier index.
+    /// Generates, persists, and marks as exposed the next available diversified transparent
+    /// address for the specified account, given the current addresses known to the wallet.
+    ///
+    /// Returns `Ok(None)` if the account identifier does not correspond to a known
+    /// account.
+    /// Returns `Err()` if request requires a shielded address
+    #[cfg(feature = "transparent-inputs")]
+    fn get_next_transparent_address(
+        &mut self,
+        _account: Self::AccountId,
+    ) -> Result<Option<(TransparentAddress, TransparentAddressMetadata)>, Self::Error>;
+
+    /// Generates, persists, and marks as exposed a diversified shielded address for the specified
+    /// account at the provided diversifier index.
     ///
     /// Returns `Ok(None)` in the case that it is not possible to generate an address conforming
     /// to the provided request at the specified diversifier index. Such a result might arise from
     /// the diversifier index not being valid for a [`ReceiverRequirement::Require`]'ed receiver.
     /// Some implementations of this trait may return `Err(_)` in some cases to expose more
     /// information, which is only accessible in a backend-specific context.
+    /// Returns `Err()` if request requires a transparent address
+    /// Returns `Err()` for account types which do not support shielded addresses
     ///
     /// Address generation should fail if an address has already been exposed for the given
     /// diversifier index and the given request produced an address having different receivers than
     /// what was originally exposed.
-    ///
-    /// # WARNINGS
-    /// If an address generated using this method has a transparent receiver and the
-    /// chosen diversifier index would be outside the wallet's internally-configured gap limit,
-    /// funds sent to these address are **likely to not be discovered on recovery from seed**. It
-    /// up to the caller of this method to either ensure that they only request transparent
-    /// receivers with indices within the range of a reasonable gap limit, or that they ensure that
-    /// their wallet provides backup facilities that can be used to ensure that funds sent to such
-    /// addresses are recoverable after a loss of wallet data.
-    ///
-    /// [`ReceiverRequirement::Require`]: zcash_keys::keys::ReceiverRequirement::Require
-    fn get_address_for_index(
+    fn get_shielded_address_for_index(
         &mut self,
         account: Self::AccountId,
         diversifier_index: DiversifierIndex,
         request: UnifiedAddressRequest,
     ) -> Result<Option<UnifiedAddress>, Self::Error>;
+
+    /// Generates, persists, and marks as exposed a transparent address for the specified account
+    /// at the provided address index.
+    ///
+    /// Returns `Ok(None)` if the account identifier does not correspond to a known account, or
+    /// if it is not possible to generate a transparent address at the specified index.
+    /// Returns `Err()` if request requires a shielded address
+    ///
+    /// # WARNINGS
+    /// If the chosen address index would be outside the wallet's internally-configured gap limit,
+    /// funds sent to this address are **likely to not be discovered on recovery from seed**. It
+    /// is up to the caller of this method to either ensure that they only request transparent
+    /// addresses with indices within the range of a reasonable gap limit, or that they ensure that
+    /// their wallet provides backup facilities that can be used to ensure that funds sent to such
+    /// addresses are recoverable after a loss of wallet data.
+    #[cfg(feature = "transparent-inputs")]
+    fn get_transparent_address_for_index(
+        &mut self,
+        _account: Self::AccountId,
+        _address_index: NonHardenedChildIndex,
+    ) -> Result<Option<(TransparentAddress, TransparentAddressMetadata)>, Self::Error>;
 
     /// Updates the wallet's view of the blockchain.
     ///

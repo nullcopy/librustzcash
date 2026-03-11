@@ -106,17 +106,30 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
         todo!("remove all transactions associated with the account")
     }
 
-    fn get_next_available_address(
+    fn get_next_shielded_address(
         &mut self,
         account: Self::AccountId,
         request: UnifiedAddressRequest,
     ) -> Result<Option<(UnifiedAddress, DiversifierIndex)>, Self::Error> {
-        tracing::debug!("get_next_available_address");
-        self.accounts
-            .get_mut(account)
-            .map(|account| account.next_available_address(request))
-            .transpose()
-            .map(|a| a.flatten())
+        tracing::debug!("get_next_shielded_address");
+        if matches!(request, UnifiedAddressRequest::Custom(r) if r.p2pkh() == ReceiverRequirement::Require)
+        {
+            Err(Error::TransparentNotSupported)
+        } else {
+            self.accounts
+                .get_mut(account)
+                .map(|account| account.next_available_address(request))
+                .transpose()
+                .map(|a| a.flatten())
+        }
+    }
+
+    #[cfg(feature = "transparent-inputs")]
+    fn get_next_transparent_address(
+        &mut self,
+        _account: Self::AccountId,
+    ) -> Result<Option<(TransparentAddress, TransparentAddressMetadata)>, Self::Error> {
+        todo!()
     }
 
     fn update_chain_tip(&mut self, tip_height: BlockHeight) -> Result<(), Self::Error> {
@@ -1238,12 +1251,21 @@ Instead derive the ufvk in the calling code and import it using `import_account_
         }
     }
 
-    fn get_address_for_index(
+    fn get_shielded_address_for_index(
         &mut self,
         _account: Self::AccountId,
         _diversifier_index: DiversifierIndex,
         _request: UnifiedAddressRequest,
     ) -> Result<Option<UnifiedAddress>, Self::Error> {
+        todo!()
+    }
+
+    #[cfg(feature = "transparent-inputs")]
+    fn get_transparent_address_for_index(
+        &mut self,
+        _account: Self::AccountId,
+        _address_index: transparent::keys::NonHardenedChildIndex,
+    ) -> Result<Option<(TransparentAddress, TransparentAddressMetadata)>, Self::Error> {
         todo!()
     }
 
@@ -1275,7 +1297,7 @@ fn range_from(i: u32, n: u32) -> Range<u32> {
 
 use zcash_client_backend::wallet::Note;
 use zcash_keys::address::Receiver;
-use zcash_keys::encoding::AddressCodec;
+use zcash_keys::{encoding::AddressCodec, keys::ReceiverRequirement};
 #[cfg(feature = "orchard")]
 use {incrementalmerkletree::frontier::Frontier, shardtree::store::Checkpoint};
 

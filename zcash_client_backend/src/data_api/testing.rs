@@ -76,7 +76,10 @@ use crate::{
 use {
     super::{TransactionsInvolvingAddress, wallet::input_selection::ShieldingSelector},
     crate::{data_api::Balance, wallet::TransparentAddressMetadata},
-    ::transparent::{address::TransparentAddress, keys::TransparentKeyScope},
+    ::transparent::{
+        address::TransparentAddress,
+        keys::{NonHardenedChildIndex, TransparentKeyScope},
+    },
     zcash_keys::keys::transparent::gap_limits::GapLimits,
 };
 
@@ -2859,7 +2862,7 @@ impl WalletWrite for MockWalletDb {
         todo!()
     }
 
-    fn get_next_available_address(
+    fn get_next_shielded_address(
         &mut self,
         _account: Self::AccountId,
         _request: UnifiedAddressRequest,
@@ -2867,12 +2870,29 @@ impl WalletWrite for MockWalletDb {
         Ok(None)
     }
 
-    fn get_address_for_index(
+    #[cfg(feature = "transparent-inputs")]
+    fn get_next_transparent_address(
+        &mut self,
+        _account: Self::AccountId,
+    ) -> Result<Option<(TransparentAddress, TransparentAddressMetadata)>, Self::Error> {
+        Ok(None)
+    }
+
+    fn get_shielded_address_for_index(
         &mut self,
         _account: Self::AccountId,
         _diversifier_index: DiversifierIndex,
         _request: UnifiedAddressRequest,
     ) -> Result<Option<UnifiedAddress>, Self::Error> {
+        Ok(None)
+    }
+
+    #[cfg(feature = "transparent-inputs")]
+    fn get_transparent_address_for_index(
+        &mut self,
+        _account: Self::AccountId,
+        _address_index: NonHardenedChildIndex,
+    ) -> Result<Option<(TransparentAddress, TransparentAddressMetadata)>, Self::Error> {
         Ok(None)
     }
 

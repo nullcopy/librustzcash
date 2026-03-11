@@ -1314,25 +1314,38 @@ impl<C: BorrowMut<rusqlite::Connection>, P: consensus::Parameters, CL: Clock, R:
         })
     }
 
-    fn get_next_available_address(
+    fn get_next_shielded_address(
         &mut self,
         account_uuid: Self::AccountId,
         request: UnifiedAddressRequest,
     ) -> Result<Option<(UnifiedAddress, DiversifierIndex)>, Self::Error> {
         self.transactionally(|wdb| {
-            wallet::get_next_available_address(
+            wallet::get_next_shielded_address(
                 wdb.conn.0,
                 &wdb.params,
                 &wdb.clock,
                 account_uuid,
                 request,
-                #[cfg(feature = "transparent-inputs")]
+            )
+        })
+    }
+
+    #[cfg(feature = "transparent-inputs")]
+    fn get_next_transparent_address(
+        &mut self,
+        account_uuid: Self::AccountId,
+    ) -> Result<Option<(TransparentAddress, TransparentAddressMetadata)>, Self::Error> {
+        self.transactionally(|wdb| {
+            wallet::get_next_transparent_address(
+                wdb.conn.0,
+                &wdb.params,
+                account_uuid,
                 &wdb.gap_limits,
             )
         })
     }
 
-    fn get_address_for_index(
+    fn get_shielded_address_for_index(
         &mut self,
         account: Self::AccountId,
         diversifier_index: DiversifierIndex,
@@ -1340,6 +1353,14 @@ impl<C: BorrowMut<rusqlite::Connection>, P: consensus::Parameters, CL: Clock, R:
     ) -> Result<Option<UnifiedAddress>, Self::Error> {
         if let Some(account) = self.get_account(account)? {
             use zcash_keys::keys::AddressGenerationError::*;
+            // Reject requests that require a transparent receiver; transparent addresses
+            // must be generated via `get_transparent_address_for_index`.
+            let requirements = account.uivk().receiver_requirements(request)?;
+            if requirements.p2pkh() == zcash_keys::keys::ReceiverRequirement::Require {
+                return Err(SqliteClientError::AddressGeneration(
+                    ReceiverTypeNotSupported(zcash_address::unified::Typecode::P2pkh),
+                ));
+            }
 
             match account.uivk().address(diversifier_index, request) {
                 Ok(address) => {
@@ -1356,14 +1377,73 @@ impl<C: BorrowMut<rusqlite::Connection>, P: consensus::Parameters, CL: Clock, R:
 
                     Ok(Some(address))
                 }
-                #[cfg(feature = "transparent-inputs")]
-                Err(InvalidTransparentChildIndex(_)) => Ok(None),
                 Err(InvalidSaplingDiversifierIndex(_)) => Ok(None),
                 Err(e) => Err(SqliteClientError::AddressGeneration(e)),
             }
         } else {
             Err(SqliteClientError::AccountUnknown)
         }
+    }
+
+    #[cfg(feature = "transparent-inputs")]
+    fn get_transparent_address_for_index(
+        &mut self,
+        account_uuid: Self::AccountId,
+        address_index: NonHardenedChildIndex,
+    ) -> Result<Option<(TransparentAddress, TransparentAddressMetadata)>, Self::Error> {
+        self.transactionally(|wdb| {
+            use zcash_client_backend::wallet::GapMetadata;
+            use zcash_keys::keys::ReceiverRequirement::*;
+
+            let account: wallet::Account =
+                match wallet::get_account(wdb.conn.0, wdb.params, account_uuid)? {
+                    Some(account) => account,
+                    None => {
+                        return Ok(None);
+                    }
+                };
+
+            let diversifier_index = DiversifierIndex::from(address_index);
+            let request = UnifiedAddressRequest::unsafe_custom(Allow, Allow, Require);
+
+            // Generate a UA at this index that includes a transparent receiver.
+            let address = match account.uivk().address(diversifier_index, request) {
+                Ok(addr) => addr,
+                Err(zcash_keys::keys::AddressGenerationError::InvalidTransparentChildIndex(_)) => {
+                    return Ok(None);
+                }
+                Err(e) => return Err(SqliteClientError::AddressGeneration(e)),
+            };
+
+            let transparent_addr = address
+                .transparent()
+                .cloned()
+                .expect("address generated with p2pkh=Require must have transparent receiver");
+
+            let chain_tip_height =
+                chain_tip_height(wdb.conn.0)?.ok_or(SqliteClientError::ChainHeightUnknown)?;
+            upsert_address(
+                wdb.conn.0,
+                wdb.params,
+                account.internal_id(),
+                diversifier_index,
+                &address,
+                Some(chain_tip_height),
+                true,
+            )?;
+
+            let meta = TransparentAddressMetadata::derived(
+                TransparentKeyScope::EXTERNAL,
+                address_index,
+                zcash_client_backend::wallet::Exposure::Exposed {
+                    at_height: chain_tip_height,
+                    gap_metadata: GapMetadata::DerivationUnknown,
+                },
+                None,
+            );
+
+            Ok(Some((transparent_addr, meta)))
+        })
     }
 
     fn update_chain_tip(&mut self, tip_height: BlockHeight) -> Result<(), Self::Error> {
@@ -2541,7 +2621,7 @@ mod tests {
     }
 
     #[test]
-    pub(crate) fn get_next_available_address() {
+    pub(crate) fn get_next_shielded_address() {
         let mut st = TestBuilder::new()
             .with_data_store_factory(TestDbFactory::default())
             .with_account_from_sapling_activation(BlockHash([0; 32]))
@@ -2554,6 +2634,8 @@ mod tests {
             .update_chain_tip(account.birthday().height())
             .unwrap();
 
+        use zcash_keys::keys::ReceiverRequirement::*;
+
         let current_addr = st
             .wallet()
             .get_last_generated_address_matching(
@@ -2563,42 +2645,34 @@ mod tests {
             .unwrap();
         assert!(current_addr.is_some());
 
+        // get_next_shielded_address rejects requests that require p2pkh, since transparent
+        // addresses must be generated via get_next_transparent_address.
+        let p2pkh_required = UnifiedAddressRequest::unsafe_custom(Omit, Require, Require);
+        let result = st
+            .wallet_mut()
+            .get_next_shielded_address(account.id(), p2pkh_required);
+        assert!(result.is_err());
+
+        // Generate a shielded-only address using a request with p2pkh=Allow.
+        #[cfg(feature = "orchard")]
+        let shielded_query = UnifiedAddressRequest::unsafe_custom(Require, Require, Allow);
+        #[cfg(not(feature = "orchard"))]
+        let shielded_query = UnifiedAddressRequest::unsafe_custom(Omit, Require, Allow);
+
         let addr2 = st
             .wallet_mut()
-            .get_next_available_address(account.id(), UnifiedAddressRequest::AllAvailableKeys)
+            .get_next_shielded_address(account.id(), shielded_query)
             .unwrap()
             .map(|(a, _)| a);
         assert!(addr2.is_some());
         assert_ne!(current_addr, addr2);
 
-        let addr2_cur = st
-            .wallet()
-            .get_last_generated_address_matching(
-                account.id(),
-                UnifiedAddressRequest::AllAvailableKeys,
-            )
-            .unwrap();
-        assert_eq!(addr2, addr2_cur);
-
         // Perform similar tests for shielded-only addresses. These should be timestamp-based; we
         // will tick the clock between each generation.
-        use zcash_keys::keys::ReceiverRequirement::*;
         #[cfg(feature = "orchard")]
         let shielded_only_request = UnifiedAddressRequest::unsafe_custom(Require, Require, Omit);
         #[cfg(not(feature = "orchard"))]
         let shielded_only_request = UnifiedAddressRequest::unsafe_custom(Omit, Require, Omit);
-
-        let cur_shielded_only = st
-            .wallet()
-            .get_last_generated_address_matching(account.id(), shielded_only_request)
-            .unwrap();
-        // If transparent support is disabled, then the previous "transparent-including"
-        // addresses were actually shielded-only, so we do have a current address.
-        #[cfg(not(feature = "transparent-inputs"))]
-        assert_eq!(cur_shielded_only, addr2);
-        // If transparent support is enabled, this works as expected.
-        #[cfg(feature = "transparent-inputs")]
-        assert!(cur_shielded_only.is_none());
 
         let di_lower = st
             .wallet()
@@ -2612,7 +2686,7 @@ mod tests {
 
         let (shielded_only, di) = st
             .wallet_mut()
-            .get_next_available_address(account.id(), shielded_only_request)
+            .get_next_shielded_address(account.id(), shielded_only_request)
             .unwrap()
             .expect("generated a shielded-only address");
 
@@ -2638,11 +2712,148 @@ mod tests {
 
         let (shielded_only_2, di_2) = st
             .wallet_mut()
-            .get_next_available_address(account.id(), shielded_only_request)
+            .get_next_shielded_address(account.id(), shielded_only_request)
             .unwrap()
             .expect("generated a shielded-only address");
         assert_ne!(shielded_only_2, shielded_only);
         assert!(u128::from(di_2) >= u128::from(di_lower) + u128::from(collision_offset));
+    }
+
+    #[test]
+    pub(crate) fn get_shielded_address_for_index_test() {
+        use zcash_keys::keys::ReceiverRequirement::*;
+        use zip32::DiversifierIndex;
+
+        let mut st = TestBuilder::new()
+            .with_data_store_factory(TestDbFactory::default())
+            .with_account_from_sapling_activation(BlockHash([0; 32]))
+            .build();
+        let account = st.test_account().cloned().unwrap();
+
+        st.wallet_mut()
+            .update_chain_tip(account.birthday().height())
+            .unwrap();
+
+        #[cfg(feature = "orchard")]
+        let request = UnifiedAddressRequest::unsafe_custom(Require, Require, Allow);
+        #[cfg(not(feature = "orchard"))]
+        let request = UnifiedAddressRequest::unsafe_custom(Omit, Require, Allow);
+
+        // Use find_address to get a valid diversifier index for this account.
+        let (_, di) = account
+            .account()
+            .uivk()
+            .find_address(DiversifierIndex::from(1000u32), request)
+            .unwrap();
+
+        let addr = st
+            .wallet_mut()
+            .get_shielded_address_for_index(account.id(), di, request)
+            .unwrap();
+        assert!(addr.is_some());
+
+        // Requesting the same index and request should return the same address.
+        let addr2 = st
+            .wallet_mut()
+            .get_shielded_address_for_index(account.id(), di, request)
+            .unwrap();
+        assert_eq!(addr, addr2);
+
+        // A different diversifier index should return a different address.
+        let mut di2 = di;
+        di2.increment().unwrap();
+        let (_, di2) = account.account().uivk().find_address(di2, request).unwrap();
+        let addr3 = st
+            .wallet_mut()
+            .get_shielded_address_for_index(account.id(), di2, request)
+            .unwrap();
+        assert!(addr3.is_some());
+        assert_ne!(addr, addr3);
+
+        // Requesting with p2pkh=Require without any shielded Require should fail.
+        let transparent_focused = UnifiedAddressRequest::unsafe_custom(Omit, Allow, Require);
+        let result =
+            st.wallet_mut()
+                .get_shielded_address_for_index(account.id(), di, transparent_focused);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "transparent-inputs")]
+    pub(crate) fn get_next_transparent_address_test() {
+        let mut st = TestBuilder::new()
+            .with_data_store_factory(TestDbFactory::default())
+            .with_account_from_sapling_activation(BlockHash([0; 32]))
+            .build();
+        let account = st.test_account().cloned().unwrap();
+
+        st.wallet_mut()
+            .update_chain_tip(account.birthday().height())
+            .unwrap();
+
+        // Generate a transparent address.
+        let result = st
+            .wallet_mut()
+            .get_next_transparent_address(account.id())
+            .unwrap();
+        assert!(result.is_some());
+
+        let (addr1, meta1) = result.unwrap();
+        assert!(meta1.address_index().is_some());
+
+        // Generate another; it should be different.
+        let (addr2, meta2) = st
+            .wallet_mut()
+            .get_next_transparent_address(account.id())
+            .unwrap()
+            .expect("generated a second transparent address");
+        assert_ne!(addr1, addr2);
+        assert_ne!(meta1.address_index(), meta2.address_index());
+    }
+
+    #[test]
+    #[cfg(feature = "transparent-inputs")]
+    pub(crate) fn get_transparent_address_for_index_test() {
+        use ::transparent::keys::NonHardenedChildIndex;
+
+        let mut st = TestBuilder::new()
+            .with_data_store_factory(TestDbFactory::default())
+            .with_account_from_sapling_activation(BlockHash([0; 32]))
+            .build();
+        let account = st.test_account().cloned().unwrap();
+
+        st.wallet_mut()
+            .update_chain_tip(account.birthday().height())
+            .unwrap();
+
+        // Generate a transparent address at a specific index.
+        let idx5 = NonHardenedChildIndex::from_index(5).unwrap();
+        let result = st
+            .wallet_mut()
+            .get_transparent_address_for_index(account.id(), idx5)
+            .unwrap();
+        assert!(result.is_some());
+
+        let (addr, meta) = result.unwrap();
+        assert_eq!(meta.address_index(), Some(idx5));
+
+        // Requesting the same index again should return the same address.
+        let (addr2, _) = st
+            .wallet_mut()
+            .get_transparent_address_for_index(account.id(), idx5)
+            .unwrap()
+            .expect("same index returns same address");
+        assert_eq!(addr, addr2);
+
+        // A different index should return a different address.
+        let idx10 = NonHardenedChildIndex::from_index(10).unwrap();
+        let (addr3, meta3) = st
+            .wallet_mut()
+            .get_transparent_address_for_index(account.id(), idx10)
+            .unwrap()
+            .expect("different index returns an address");
+        assert_ne!(addr, addr3);
+        assert_eq!(meta3.address_index(), Some(idx10));
     }
 
     #[test]
