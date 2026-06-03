@@ -62,9 +62,34 @@ impl FeeRule for StandardFeeRule {
     }
 }
 
+/// The pool to which a transaction's change should be sent.
+///
+/// This generalizes the notion of a "fallback change pool": for transactions with shielded
+/// flows, change is always sent to a shielded pool, but for fully-transparent transactions
+/// the caller may choose to retain change in the transparent pool (sent to a wallet-internal
+/// BIP 44 change address) instead of shielding it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChangePool {
+    /// Change should be sent to the specified shielded pool.
+    Shielded(ShieldedProtocol),
+    /// Change should be retained in the transparent pool, sent to a wallet-internal
+    /// (BIP 44 internal-scope) transparent address.
+    ///
+    /// This is only honored for fully-transparent transactions; any transaction with shielded
+    /// flows always sends its change to a shielded pool.
+    #[cfg(feature = "transparent-inputs")]
+    Transparent,
+}
+
+impl From<ShieldedProtocol> for ChangePool {
+    fn from(protocol: ShieldedProtocol) -> Self {
+        ChangePool::Shielded(protocol)
+    }
+}
+
 /// `ChangeValue` represents either a proposed change output to a shielded pool
 /// (with an optional change memo), or if the "transparent-inputs" feature is
-/// enabled, an ephemeral output to the transparent pool.
+/// enabled, an ephemeral or non-ephemeral output to the transparent pool.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChangeValue(ChangeValueInner);
 
@@ -77,6 +102,11 @@ enum ChangeValueInner {
     },
     #[cfg(feature = "transparent-inputs")]
     EphemeralTransparent { value: Zatoshis },
+    /// A non-ephemeral transparent change output, sent to a wallet-internal (BIP 44
+    /// internal-scope) transparent address. Used for fully-transparent transactions that
+    /// retain change in the transparent pool.
+    #[cfg(feature = "transparent-inputs")]
+    Transparent { value: Zatoshis },
 }
 
 impl ChangeValue {
@@ -84,6 +114,15 @@ impl ChangeValue {
     #[cfg(feature = "transparent-inputs")]
     pub fn ephemeral_transparent(value: Zatoshis) -> Self {
         Self(ChangeValueInner::EphemeralTransparent { value })
+    }
+
+    /// Constructs a new non-ephemeral transparent change output value.
+    ///
+    /// This is used for fully-transparent (t->t) transactions where change should be returned
+    /// to a wallet-internal (BIP 44 internal-scope) transparent address.
+    #[cfg(feature = "transparent-inputs")]
+    pub fn transparent(value: Zatoshis) -> Self {
+        Self(ChangeValueInner::Transparent { value })
     }
 
     /// Constructs a new change value that will be created as a shielded output.
@@ -111,7 +150,8 @@ impl ChangeValue {
         match &self.0 {
             ChangeValueInner::Shielded { protocol, .. } => PoolType::Shielded(*protocol),
             #[cfg(feature = "transparent-inputs")]
-            ChangeValueInner::EphemeralTransparent { .. } => PoolType::Transparent,
+            ChangeValueInner::EphemeralTransparent { .. }
+            | ChangeValueInner::Transparent { .. } => PoolType::Transparent,
         }
     }
 
@@ -120,7 +160,8 @@ impl ChangeValue {
         match &self.0 {
             ChangeValueInner::Shielded { value, .. } => *value,
             #[cfg(feature = "transparent-inputs")]
-            ChangeValueInner::EphemeralTransparent { value } => *value,
+            ChangeValueInner::EphemeralTransparent { value }
+            | ChangeValueInner::Transparent { value } => *value,
         }
     }
 
@@ -129,7 +170,8 @@ impl ChangeValue {
         match &self.0 {
             ChangeValueInner::Shielded { memo, .. } => memo.as_ref(),
             #[cfg(feature = "transparent-inputs")]
-            ChangeValueInner::EphemeralTransparent { .. } => None,
+            ChangeValueInner::EphemeralTransparent { .. }
+            | ChangeValueInner::Transparent { .. } => None,
         }
     }
 
@@ -144,7 +186,16 @@ impl ChangeValue {
             ChangeValueInner::Shielded { .. } => false,
             #[cfg(feature = "transparent-inputs")]
             ChangeValueInner::EphemeralTransparent { .. } => true,
+            #[cfg(feature = "transparent-inputs")]
+            ChangeValueInner::Transparent { .. } => false,
         }
+    }
+
+    /// Whether this is a non-ephemeral transparent change output, to be sent to a
+    /// wallet-internal (BIP 44 internal-scope) transparent address.
+    #[cfg(feature = "transparent-inputs")]
+    pub fn is_transparent_change(&self) -> bool {
+        matches!(self.0, ChangeValueInner::Transparent { .. })
     }
 }
 

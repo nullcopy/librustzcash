@@ -8,7 +8,7 @@ use core::marker::PhantomData;
 
 use zcash_primitives::transaction::fees::{FeeRule, transparent, zip317 as prim_zip317};
 use zcash_protocol::{
-    ShieldedProtocol, consensus,
+    consensus,
     memo::MemoBytes,
     value::{BalanceError, Zatoshis},
 };
@@ -19,8 +19,8 @@ use crate::{
 };
 
 use super::{
-    ChangeError, ChangeStrategy, DustOutputPolicy, EphemeralBalance, MetaSource, SplitPolicy,
-    TransactionBalance,
+    ChangeError, ChangePool, ChangeStrategy, DustOutputPolicy, EphemeralBalance, MetaSource,
+    SplitPolicy, TransactionBalance,
     common::{SinglePoolBalanceConfig, single_pool_output_balance},
     sapling as sapling_fees,
 };
@@ -65,7 +65,7 @@ impl Zip317FeeRule for StandardFeeRule {
 pub struct SingleOutputChangeStrategy<R, I> {
     fee_rule: R,
     change_memo: Option<MemoBytes>,
-    fallback_change_pool: ShieldedProtocol,
+    fallback_change_pool: ChangePool,
     dust_output_policy: DustOutputPolicy,
     meta_source: PhantomData<I>,
 }
@@ -74,18 +74,23 @@ impl<R, I> SingleOutputChangeStrategy<R, I> {
     /// Constructs a new [`SingleOutputChangeStrategy`] with the specified ZIP 317
     /// fee parameters and change memo.
     ///
-    /// `fallback_change_pool` is used when more than one shielded pool is enabled via
-    /// feature flags, and the transaction has no shielded inputs.
+    /// `fallback_change_pool` determines where change is sent when the transaction has no
+    /// shielded flows. Passing a [`ShieldedProtocol`] (which converts to
+    /// [`ChangePool::Shielded`]) selects the pool used when more than one shielded pool is
+    /// enabled via feature flags; passing [`ChangePool::Transparent`] retains change as a
+    /// non-ephemeral transparent output for fully-transparent transactions.
+    ///
+    /// [`ShieldedProtocol`]: zcash_protocol::ShieldedProtocol
     pub fn new(
         fee_rule: R,
         change_memo: Option<MemoBytes>,
-        fallback_change_pool: ShieldedProtocol,
+        fallback_change_pool: impl Into<ChangePool>,
         dust_output_policy: DustOutputPolicy,
     ) -> Self {
         Self {
             fee_rule,
             change_memo,
-            fallback_change_pool,
+            fallback_change_pool: fallback_change_pool.into(),
             dust_output_policy,
             meta_source: PhantomData,
         }
@@ -160,7 +165,7 @@ where
 pub struct MultiOutputChangeStrategy<R, I> {
     fee_rule: R,
     change_memo: Option<MemoBytes>,
-    fallback_change_pool: ShieldedProtocol,
+    fallback_change_pool: ChangePool,
     dust_output_policy: DustOutputPolicy,
     split_policy: SplitPolicy,
     meta_source: PhantomData<I>,
@@ -174,21 +179,26 @@ impl<R, I> MultiOutputChangeStrategy<R, I> {
     /// change value is available to create notes with at least the minimum value dictated by the
     /// split policy.
     ///
-    /// - `fallback_change_pool`: the pool to which change will be sent if when more than one
-    ///   shielded pool is enabled via feature flags, and the transaction has no shielded inputs.
+    /// - `fallback_change_pool`: the pool to which change will be sent when the transaction has
+    ///   no shielded flows. Passing a [`ShieldedProtocol`] (which converts to
+    ///   [`ChangePool::Shielded`]) selects the pool used when more than one shielded pool is
+    ///   enabled via feature flags; passing [`ChangePool::Transparent`] retains change as a
+    ///   non-ephemeral transparent output for fully-transparent transactions.
     /// - `split_policy`: A policy value describing how the change value should be returned as
     ///   multiple notes.
+    ///
+    /// [`ShieldedProtocol`]: zcash_protocol::ShieldedProtocol
     pub fn new(
         fee_rule: R,
         change_memo: Option<MemoBytes>,
-        fallback_change_pool: ShieldedProtocol,
+        fallback_change_pool: impl Into<ChangePool>,
         dust_output_policy: DustOutputPolicy,
         split_policy: SplitPolicy,
     ) -> Self {
         Self {
             fee_rule,
             change_memo,
-            fallback_change_pool,
+            fallback_change_pool: fallback_change_pool.into(),
             dust_output_policy,
             split_policy,
             meta_source: PhantomData,
@@ -745,6 +755,102 @@ mod tests {
             Ok(balance) if
                 balance.proposed_change() == [ChangeValue::sapling(Zatoshis::const_from_u64(8000), None)] &&
                 balance.fee_required() == Zatoshis::const_from_u64(15000)
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "transparent-inputs")]
+    fn change_transparent_flows_with_transparent_change() {
+        use crate::fees::{ChangePool, sapling as sapling_fees};
+        use ::transparent::{address::TransparentAddress, bundle::OutPoint};
+
+        // Configure the change strategy to retain change in the transparent pool.
+        let change_strategy = SingleOutputChangeStrategy::<_, MockWalletDb>::new(
+            Zip317FeeRule::standard(),
+            None,
+            ChangePool::Transparent,
+            DustOutputPolicy::default(),
+        );
+
+        // Spend a single transparent UTXO sufficient to pay a transparent recipient, the fee, and
+        // leave transparent change. Because the change output is a (cheaper) P2PKH transparent
+        // output rather than a shielded output, the fee is lower than in the shielded-change case.
+        let result = change_strategy.compute_balance::<_, Infallible>(
+            &Network::TestNetwork,
+            Network::TestNetwork
+                .activation_height(NetworkUpgrade::Nu5)
+                .unwrap()
+                .into(),
+            &[TestTransparentInput {
+                outpoint: OutPoint::fake(),
+                coin: TxOut::new(
+                    Zatoshis::const_from_u64(63000),
+                    TransparentAddress::PublicKeyHash([0u8; 20]).script().into(),
+                ),
+            }],
+            &[TxOut::new(
+                Zatoshis::const_from_u64(40000),
+                Script::default(),
+            )],
+            &sapling_fees::EmptyBundleView,
+            #[cfg(feature = "orchard")]
+            &orchard_fees::EmptyBundleView,
+            None,
+            &(),
+        );
+
+        assert_matches!(
+            result,
+            Ok(balance) if
+                balance.proposed_change() == [ChangeValue::transparent(Zatoshis::const_from_u64(13000))] &&
+                balance.fee_required() == Zatoshis::const_from_u64(10000)
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "transparent-inputs")]
+    fn exact_match_transparent_flows_with_transparent_change_produces_no_change() {
+        use crate::fees::{ChangePool, sapling as sapling_fees};
+        use ::transparent::{address::TransparentAddress, bundle::OutPoint};
+
+        let change_strategy = SingleOutputChangeStrategy::<_, MockWalletDb>::new(
+            Zip317FeeRule::standard(),
+            None,
+            ChangePool::Transparent,
+            DustOutputPolicy::default(),
+        );
+
+        // Input value exactly covers the payment plus the (no-change) fee, so no transparent
+        // change output is produced.
+        let result = change_strategy.compute_balance::<_, Infallible>(
+            &Network::TestNetwork,
+            Network::TestNetwork
+                .activation_height(NetworkUpgrade::Nu5)
+                .unwrap()
+                .into(),
+            &[TestTransparentInput {
+                outpoint: OutPoint::fake(),
+                coin: TxOut::new(
+                    Zatoshis::const_from_u64(50000),
+                    TransparentAddress::PublicKeyHash([0u8; 20]).script().into(),
+                ),
+            }],
+            &[TxOut::new(
+                Zatoshis::const_from_u64(40000),
+                Script::default(),
+            )],
+            &sapling_fees::EmptyBundleView,
+            #[cfg(feature = "orchard")]
+            &orchard_fees::EmptyBundleView,
+            None,
+            &(),
+        );
+
+        assert_matches!(
+            result,
+            Ok(balance) if
+                balance.proposed_change().is_empty() &&
+                balance.fee_required() == Zatoshis::const_from_u64(10000)
         );
     }
 

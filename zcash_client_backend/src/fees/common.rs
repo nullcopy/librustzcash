@@ -14,8 +14,8 @@ use zcash_protocol::{
 use crate::data_api::{AccountMeta, wallet::TargetHeight};
 
 use super::{
-    ChangeError, ChangeValue, DustAction, DustOutputPolicy, EphemeralBalance, SplitPolicy,
-    TransactionBalance, sapling as sapling_fees,
+    ChangeError, ChangePool, ChangeValue, DustAction, DustOutputPolicy, EphemeralBalance,
+    SplitPolicy, TransactionBalance, sapling as sapling_fees,
 };
 
 #[cfg(feature = "orchard")]
@@ -114,27 +114,37 @@ where
     })
 }
 
-/// Decide which shielded pool change should go to if there is any.
+/// Decide which pool change should go to if there is any.
+///
+/// For transactions with any shielded flows, change is always sent to a shielded pool (to avoid
+/// pool-crossing). For fully-transparent flows, the `fallback_change_pool` is returned, which may
+/// be [`ChangePool::Transparent`] if the caller has opted in to retaining transparent change.
 pub(crate) fn select_change_pool(
     _net_flows: &NetFlows,
-    _fallback_change_pool: ShieldedProtocol,
-) -> ShieldedProtocol {
+    _fallback_change_pool: ChangePool,
+) -> ChangePool {
     // TODO: implement a less naive strategy for selecting the pool to which change will be sent.
     #[cfg(feature = "orchard")]
     if _net_flows.orchard_in.is_positive() || _net_flows.orchard_out.is_positive() {
         // Send change to Orchard if we're spending any Orchard inputs or creating any Orchard outputs.
-        ShieldedProtocol::Orchard
+        ChangePool::Shielded(ShieldedProtocol::Orchard)
     } else if _net_flows.sapling_in.is_positive() || _net_flows.sapling_out.is_positive() {
         // Otherwise, send change to Sapling if we're spending any Sapling inputs or creating any
         // Sapling outputs, so that we avoid pool-crossing.
-        ShieldedProtocol::Sapling
+        ChangePool::Shielded(ShieldedProtocol::Sapling)
     } else {
         // The flows are transparent, so there may not be change. If there is, the caller
-        // gets to decide where to shield it.
+        // gets to decide where it goes.
         _fallback_change_pool
     }
     #[cfg(not(feature = "orchard"))]
-    ShieldedProtocol::Sapling
+    if _net_flows.sapling_in.is_positive() || _net_flows.sapling_out.is_positive() {
+        ChangePool::Shielded(ShieldedProtocol::Sapling)
+    } else {
+        // The flows are transparent, so there may not be change. If there is, the caller
+        // gets to decide where it goes.
+        _fallback_change_pool
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -170,7 +180,7 @@ pub(crate) struct SinglePoolBalanceConfig<'a, P, F> {
     dust_output_policy: &'a DustOutputPolicy,
     default_dust_threshold: Zatoshis,
     split_policy: &'a SplitPolicy,
-    fallback_change_pool: ShieldedProtocol,
+    fallback_change_pool: ChangePool,
     marginal_fee: Zatoshis,
     grace_actions: usize,
 }
@@ -183,7 +193,7 @@ impl<'a, P, F> SinglePoolBalanceConfig<'a, P, F> {
         dust_output_policy: &'a DustOutputPolicy,
         default_dust_threshold: Zatoshis,
         split_policy: &'a SplitPolicy,
-        fallback_change_pool: ShieldedProtocol,
+        fallback_change_pool: ChangePool,
         marginal_fee: Zatoshis,
         grace_actions: usize,
     ) -> Self {
@@ -233,26 +243,56 @@ where
     )?;
 
     let change_pool = select_change_pool(&net_flows, cfg.fallback_change_pool);
-    let target_change_count = wallet_meta.map_or(1, |m| {
-        usize::from(cfg.split_policy.target_output_count)
-            // If we cannot determine a total note count, fall back to a single output
-            .saturating_sub(m.total_note_count().unwrap_or(usize::MAX))
-            .max(1)
-    });
+
+    // Whether change (if any) should be retained as a non-ephemeral transparent output rather
+    // than shielded. This is only ever selected for fully-transparent flows; see
+    // `select_change_pool`.
+    #[cfg(feature = "transparent-inputs")]
+    let wants_transparent_change = matches!(change_pool, ChangePool::Transparent);
+    #[cfg(not(feature = "transparent-inputs"))]
+    let wants_transparent_change = false;
+
+    // The shielded pool to which change should be sent, if change is shielded.
+    let shielded_change_pool = match change_pool {
+        ChangePool::Shielded(protocol) => Some(protocol),
+        #[cfg(feature = "transparent-inputs")]
+        ChangePool::Transparent => None,
+    };
+
+    // Transparent change is never split: a single P2PKH change output is produced. Shielded
+    // change may be split across multiple outputs according to the split policy.
+    let target_change_count = if wants_transparent_change {
+        1
+    } else {
+        wallet_meta.map_or(1, |m| {
+            usize::from(cfg.split_policy.target_output_count)
+                // If we cannot determine a total note count, fall back to a single output
+                .saturating_sub(m.total_note_count().unwrap_or(usize::MAX))
+                .max(1)
+        })
+    };
     let target_change_counts = OutputManifest {
-        transparent: 0,
-        sapling: if change_pool == ShieldedProtocol::Sapling {
+        transparent: if wants_transparent_change {
             target_change_count
         } else {
             0
         },
-        orchard: if change_pool == ShieldedProtocol::Orchard {
+        sapling: if shielded_change_pool == Some(ShieldedProtocol::Sapling) {
+            target_change_count
+        } else {
+            0
+        },
+        orchard: if shielded_change_pool == Some(ShieldedProtocol::Orchard) {
             target_change_count
         } else {
             0
         },
     };
-    assert!(target_change_counts.total_shielded() == target_change_count);
+    assert!(if wants_transparent_change {
+        target_change_counts.transparent == target_change_count
+    } else {
+        target_change_counts.total_shielded() == target_change_count
+    });
 
     // We don't create a fully-transparent transaction if a change memo is used.
     let fully_transparent = net_flows.is_transparent() && change_memo.is_none();
@@ -398,6 +438,74 @@ where
             // (e.g. the second transaction of a ZIP 320 pair).
             (vec![], min_fee)
         }
+        #[cfg(feature = "transparent-inputs")]
+        _ if wants_transparent_change => {
+            // Fully-transparent transaction retaining change in the transparent pool. A single
+            // P2PKH change output is produced; there is no shielded change, splitting, or memo.
+            let total_fee = cfg
+                .fee_rule
+                .fee_required(
+                    cfg.params,
+                    BlockHeight::from(target_height),
+                    transparent_input_sizes.clone(),
+                    transparent_output_sizes
+                        .clone()
+                        .chain(core::iter::once(P2PKH_STANDARD_OUTPUT_SIZE)),
+                    sapling_input_count,
+                    sapling_output_count(0)?,
+                    orchard_action_count(0)?,
+                )
+                .map_err(|fee_error| ChangeError::StrategyError(E::from(fee_error)))?;
+
+            let total_out = (subtotal_out + total_fee).ok_or_else(overflow)?;
+            let total_change =
+                (total_in - total_out).ok_or_else(|| ChangeError::InsufficientFunds {
+                    available: total_in,
+                    required: total_out,
+                })?;
+
+            let change_dust_threshold = cfg
+                .dust_output_policy
+                .dust_threshold()
+                .unwrap_or(cfg.default_dust_threshold);
+
+            if total_change < change_dust_threshold {
+                match cfg.dust_output_policy.action() {
+                    DustAction::Reject => {
+                        // A transparent change output cannot carry a memo, so (unlike shielded
+                        // change) there is no benefit to a zero-valued transparent change output;
+                        // we simply omit it, folding the value into the fee.
+                        if total_change.is_zero() {
+                            (vec![], total_fee)
+                        } else {
+                            let shortfall =
+                                (change_dust_threshold - total_change).ok_or_else(underflow)?;
+                            return Err(ChangeError::InsufficientFunds {
+                                available: total_in,
+                                required: (total_in + shortfall).ok_or_else(overflow)?,
+                            });
+                        }
+                    }
+                    DustAction::AllowDustChange => {
+                        (vec![ChangeValue::transparent(total_change)], total_fee)
+                    }
+                    DustAction::AddDustToFee => {
+                        let fee_with_dust = (total_change + total_fee).ok_or_else(overflow)?;
+                        let reasonable_fee =
+                            (total_fee + (MINIMUM_FEE * 10u64).unwrap()).ok_or_else(overflow)?;
+                        if fee_with_dust > reasonable_fee {
+                            // Defend against losing money by using AddDustToFee with a too-high
+                            // dust threshold.
+                            (vec![ChangeValue::transparent(total_change)], total_fee)
+                        } else {
+                            (vec![], fee_with_dust)
+                        }
+                    }
+                }
+            } else {
+                (vec![ChangeValue::transparent(total_change)], total_fee)
+            }
+        }
         _ => {
             let max_fee = max(
                 min_fee,
@@ -439,16 +547,20 @@ where
                         transparent_input_sizes,
                         transparent_output_sizes,
                         sapling_input_count,
-                        sapling_output_count(if change_pool == ShieldedProtocol::Sapling {
-                            split_count
-                        } else {
-                            0
-                        })?,
-                        orchard_action_count(if change_pool == ShieldedProtocol::Orchard {
-                            split_count
-                        } else {
-                            0
-                        })?,
+                        sapling_output_count(
+                            if shielded_change_pool == Some(ShieldedProtocol::Sapling) {
+                                split_count
+                            } else {
+                                0
+                            },
+                        )?,
+                        orchard_action_count(
+                            if shielded_change_pool == Some(ShieldedProtocol::Orchard) {
+                                split_count
+                            } else {
+                                0
+                            },
+                        )?,
                     )
                     .map_err(|fee_error| ChangeError::StrategyError(E::from(fee_error)))?
             } else {
@@ -470,7 +582,8 @@ where
                     (0usize..split_count)
                         .map(|i| {
                             ChangeValue::shielded(
-                                change_pool,
+                                shielded_change_pool
+                                    .expect("shielded change pool is set for shielded change"),
                                 if i == 0 {
                                     // Add any remainder to the first output only
                                     (*per_output_change.quotient() + *per_output_change.remainder())
@@ -530,7 +643,8 @@ where
                         } else if change_memo.is_some() {
                             (
                                 vec![ChangeValue::shielded(
-                                    change_pool,
+                                    shielded_change_pool
+                                        .expect("shielded change pool is set for shielded change"),
                                     Zatoshis::ZERO,
                                     change_memo.cloned(),
                                 )],

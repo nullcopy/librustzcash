@@ -37,6 +37,14 @@ workspace.
   (behind the `transparent-inputs` feature flag), for reserving BIP 44
   internal-scope (change) transparent addresses; the analogue of
   `reserve_next_n_ephemeral_addresses`.
+- `zcash_client_backend::fees::ChangePool` enum, generalizing the notion of a
+  "fallback change pool" to permit fully-transparent transactions to retain
+  change in the transparent pool (`ChangePool::Transparent`, behind the
+  `transparent-inputs` feature flag) instead of shielding it. `impl
+  From<ShieldedProtocol> for ChangePool` is provided.
+- `zcash_client_backend::fees::ChangeValue::transparent` constructor and
+  `ChangeValue::is_transparent_change` accessor (behind the `transparent-inputs`
+  feature flag), for non-ephemeral transparent change outputs.
 
 ### Changed
 - `zcash_client_backend::data_api`:
@@ -72,6 +80,12 @@ workspace.
 - `zcash_client_backend::data_api::wallet::input_selection::ShieldingSelector`
   now requires implementors to provide `propose_shielding_coinbase` in
   addition to `propose_shielding`.
+- `zcash_client_backend::fees::zip317::SingleOutputChangeStrategy::new`,
+  `zcash_client_backend::fees::zip317::MultiOutputChangeStrategy::new`, and
+  `zcash_client_backend::fees::fixed::SingleOutputChangeStrategy::new` now take
+  `fallback_change_pool: impl Into<ChangePool>` instead of
+  `fallback_change_pool: ShieldedProtocol`. Existing callers passing a
+  `ShieldedProtocol` continue to work via the provided `From` conversion.
 
 ### Removed
 - `zcash_client_backend::data_api::WalletUtxo` (use `WalletTransparentOutput` 

@@ -4,7 +4,7 @@ use core::marker::PhantomData;
 
 use zcash_primitives::transaction::fees::{fixed::FeeRule as FixedFeeRule, transparent};
 use zcash_protocol::{
-    ShieldedProtocol, consensus,
+    consensus,
     memo::MemoBytes,
     value::{BalanceError, Zatoshis},
 };
@@ -12,7 +12,7 @@ use zcash_protocol::{
 use crate::data_api::{InputSource, wallet::TargetHeight};
 
 use super::{
-    ChangeError, ChangeStrategy, DustOutputPolicy, EphemeralBalance, SplitPolicy,
+    ChangeError, ChangePool, ChangeStrategy, DustOutputPolicy, EphemeralBalance, SplitPolicy,
     TransactionBalance,
     common::{SinglePoolBalanceConfig, single_pool_output_balance},
     sapling as sapling_fees,
@@ -28,7 +28,7 @@ use super::orchard as orchard_fees;
 pub struct SingleOutputChangeStrategy<I> {
     fee_rule: FixedFeeRule,
     change_memo: Option<MemoBytes>,
-    fallback_change_pool: ShieldedProtocol,
+    fallback_change_pool: ChangePool,
     dust_output_policy: DustOutputPolicy,
     meta_source: PhantomData<I>,
 }
@@ -37,18 +37,23 @@ impl<I> SingleOutputChangeStrategy<I> {
     /// Constructs a new [`SingleOutputChangeStrategy`] with the specified fee rule
     /// and change memo.
     ///
-    /// `fallback_change_pool` is used when more than one shielded pool is enabled via
-    /// feature flags, and the transaction has no shielded inputs.
+    /// `fallback_change_pool` determines where change is sent when the transaction has no
+    /// shielded flows. Passing a [`ShieldedProtocol`] (which converts to
+    /// [`ChangePool::Shielded`]) selects the pool used when more than one shielded pool is
+    /// enabled via feature flags; passing [`ChangePool::Transparent`] retains change as a
+    /// non-ephemeral transparent output for fully-transparent transactions.
+    ///
+    /// [`ShieldedProtocol`]: zcash_protocol::ShieldedProtocol
     pub fn new(
         fee_rule: FixedFeeRule,
         change_memo: Option<MemoBytes>,
-        fallback_change_pool: ShieldedProtocol,
+        fallback_change_pool: impl Into<ChangePool>,
         dust_output_policy: DustOutputPolicy,
     ) -> Self {
         Self {
             fee_rule,
             change_memo,
-            fallback_change_pool,
+            fallback_change_pool: fallback_change_pool.into(),
             dust_output_policy,
             meta_source: PhantomData,
         }
