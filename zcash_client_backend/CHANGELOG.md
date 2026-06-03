@@ -33,6 +33,10 @@ workspace.
 - `zcash_client_backend::data_api::wallet::ProposeShieldingCoinbaseErrT` type
   alias, parallel to `ProposeShieldingErrT` but parameterized on a `FeeRule`
   instead of a `ChangeStrategy`.
+- `zcash_client_backend::data_api::WalletWrite::reserve_next_n_internal_addresses`
+  (behind the `transparent-inputs` feature flag), for reserving BIP 44
+  internal-scope (change) transparent addresses; the analogue of
+  `reserve_next_n_ephemeral_addresses`.
 
 ### Changed
 - `zcash_client_backend::data_api`:

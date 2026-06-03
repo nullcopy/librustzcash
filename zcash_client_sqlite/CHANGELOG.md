@@ -10,6 +10,12 @@ workspace.
 
 ## [Unreleased]
 
+### Added
+- `WalletDb` now implements
+  `zcash_client_backend::data_api::WalletWrite::reserve_next_n_internal_addresses`
+  (behind the `transparent-inputs` feature flag), reserving BIP 44
+  internal-scope (change) transparent addresses for use as transparent change.
+
 ## [0.20.2] - 2026-05-07
 
 ### Fixed

@@ -3235,6 +3235,33 @@ pub trait WalletWrite: WalletRead {
         )
     }
 
+    /// Reserves the next `n` available addresses in the [BIP 44] internal (change) scope for the
+    /// given account, returning the reserved addresses along with their derivation metadata.
+    ///
+    /// These addresses are used to receive transparent change in fully-transparent transactions.
+    /// This is the [`TransparentKeyScope::INTERNAL`] analogue of
+    /// [`reserve_next_n_ephemeral_addresses`]; addresses are reserved within the address gap
+    /// limit for the internal scope. As with ephemeral reservation, this cannot be undone, so as
+    /// far as possible, errors associated with transaction construction should have been reported
+    /// before calling this method.
+    ///
+    /// Returns an error if there is insufficient space within the gap limit to allocate the given
+    /// number of addresses, or if the account identifier does not correspond to a known account.
+    ///
+    /// [`reserve_next_n_ephemeral_addresses`]: WalletWrite::reserve_next_n_ephemeral_addresses
+    /// [`TransparentKeyScope::INTERNAL`]: ::transparent::keys::TransparentKeyScope::INTERNAL
+    /// [BIP 44]: https://github.com/bitcoin/bips/blob/master/bip-0044.mediawiki#user-content-Address_gap_limit
+    #[cfg(feature = "transparent-inputs")]
+    fn reserve_next_n_internal_addresses(
+        &mut self,
+        _account_id: Self::AccountId,
+        _n: usize,
+    ) -> Result<Vec<(TransparentAddress, TransparentAddressMetadata)>, Self::Error> {
+        unimplemented!(
+            "WalletWrite::reserve_next_n_internal_addresses must be overridden for wallets to use the `transparent-inputs` feature"
+        )
+    }
+
     /// Updates the wallet backend with respect to the status of a specific transaction, from the
     /// perspective of the main chain.
     ///
