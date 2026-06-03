@@ -33,6 +33,10 @@ workspace.
 - `zcash_client_backend::data_api::wallet::ProposeShieldingCoinbaseErrT` type
   alias, parallel to `ProposeShieldingErrT` but parameterized on a `FeeRule`
   instead of a `ChangeStrategy`.
+- `zcash_client_backend::data_api::TransparentInputFilter` enum (behind the
+  `transparent-inputs` feature flag), used to select transparent inputs by
+  address (`Addresses`) or by an arbitrary address predicate (`Predicate`) for
+  preferential selection in `InputSelector::propose_transaction`.
 - `zcash_client_backend::data_api::WalletWrite::reserve_next_n_internal_addresses`
   (behind the `transparent-inputs` feature flag), for reserving BIP 44
   internal-scope (change) transparent addresses; the analogue of
@@ -80,6 +84,15 @@ workspace.
 - `zcash_client_backend::data_api::wallet::input_selection::ShieldingSelector`
   now requires implementors to provide `propose_shielding_coinbase` in
   addition to `propose_shielding`.
+- `zcash_client_backend::data_api::wallet::input_selection::InputSelector::propose_transaction`
+  now takes an additional `Option<TransparentInputFilter<'_>>` argument (behind
+  the `transparent-inputs` feature flag). When `Some`, transparent UTXOs
+  received at matching addresses are selected preferentially, ahead of shielded
+  notes. Existing callers should pass `None` to preserve prior behavior.
+- The `InputSelector` implementation for `GreedyInputSelector` now additionally
+  requires its `InputSource` to implement `WalletRead` (with matching
+  `AccountId` and `Error` associated types), as required to enumerate candidate
+  addresses for `TransparentInputFilter::Predicate`.
 - `zcash_client_backend::fees::zip317::SingleOutputChangeStrategy::new`,
   `zcash_client_backend::fees::zip317::MultiOutputChangeStrategy::new`, and
   `zcash_client_backend::fees::fixed::SingleOutputChangeStrategy::new` now take

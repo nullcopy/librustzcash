@@ -677,6 +677,10 @@ where
         change_strategy,
         #[cfg(feature = "unstable")]
         proposed_version,
+        // `propose_transfer` preserves the shielded-only input selection behavior; callers that
+        // wish to spend transparent inputs should use `propose_transparent_transfer`.
+        #[cfg(feature = "transparent-inputs")]
+        None,
     )?;
     Ok(proposal)
 }

@@ -1409,6 +1409,44 @@ pub enum TransparentOutputFilter {
     CoinbaseOnly,
 }
 
+/// A filter that selects transparent inputs by the address at which they were received.
+///
+/// When a filter of this kind is supplied to [`InputSelector::propose_transaction`], transparent
+/// UTXOs received at matching addresses are *preferentially* selected (ahead of shielded notes)
+/// to satisfy the transaction request. This is the mechanism by which fully-transparent (t->t)
+/// transactions select their inputs.
+///
+/// [`InputSelector::propose_transaction`]: crate::data_api::wallet::input_selection::InputSelector::propose_transaction
+#[cfg(feature = "transparent-inputs")]
+pub enum TransparentInputFilter<'a> {
+    /// Matches transparent inputs received at any of the given addresses.
+    Addresses(&'a [TransparentAddress]),
+    /// Matches transparent inputs received at any address for which the predicate returns `true`.
+    ///
+    /// The predicate is invoked once per candidate address, and so must be callable multiple
+    /// times (hence [`Fn`] rather than [`FnOnce`]).
+    Predicate(Box<dyn Fn(&TransparentAddress) -> bool + 'a>),
+}
+
+#[cfg(feature = "transparent-inputs")]
+impl TransparentInputFilter<'_> {
+    /// Constructs a filter that matches no transparent inputs.
+    ///
+    /// This is equivalent to `TransparentInputFilter::Addresses(&[])` and is useful as an
+    /// explicit "select no transparent inputs" value.
+    pub fn none() -> Self {
+        TransparentInputFilter::Addresses(&[])
+    }
+
+    /// Returns whether the given address is matched by this filter.
+    pub fn matches(&self, address: &TransparentAddress) -> bool {
+        match self {
+            TransparentInputFilter::Addresses(addresses) => addresses.contains(address),
+            TransparentInputFilter::Predicate(predicate) => predicate(address),
+        }
+    }
+}
+
 /// A trait representing the capability to query a data store for unspent transaction outputs
 /// belonging to a account.
 #[cfg_attr(feature = "test-dependencies", delegatable_trait)]
@@ -3436,6 +3474,33 @@ mod tests {
             Address::Sapling(pa) => pa,
             other => panic!("expected Sapling address, got {other:?}"),
         }
+    }
+
+    #[cfg(feature = "transparent-inputs")]
+    #[test]
+    fn transparent_input_filter_matches() {
+        let addr0 = transparent_address_for_tag(0);
+        let addr1 = transparent_address_for_tag(1);
+        let addr2 = transparent_address_for_tag(2);
+
+        // `none()` matches nothing.
+        let none = TransparentInputFilter::none();
+        assert!(!none.matches(&addr0));
+        assert!(!none.matches(&addr1));
+
+        // `Addresses` matches exactly the listed addresses.
+        let addresses = [addr0, addr1];
+        let by_address = TransparentInputFilter::Addresses(&addresses);
+        assert!(by_address.matches(&addr0));
+        assert!(by_address.matches(&addr1));
+        assert!(!by_address.matches(&addr2));
+
+        // `Predicate` matches according to the supplied closure, and may be called more than once.
+        let allow = addr0;
+        let by_predicate = TransparentInputFilter::Predicate(Box::new(move |a| *a == allow));
+        assert!(by_predicate.matches(&addr0));
+        assert!(!by_predicate.matches(&addr1));
+        assert!(by_predicate.matches(&addr0));
     }
 
     fn unified_account_with(
