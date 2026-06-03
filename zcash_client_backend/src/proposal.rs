@@ -74,6 +74,10 @@ pub enum ProposalError {
     /// receiver. Shielding requires the destination to be able to receive shielded value.
     #[cfg(feature = "transparent-inputs")]
     ShieldingRequiresShieldedRecipient,
+    /// A fully-transparent transfer proposal included a payment to a shielded recipient.
+    /// Fully-transparent transfers may only pay transparent recipients.
+    #[cfg(feature = "zcashd-compat")]
+    ShieldedRecipientInTransparentTransfer,
     /// The transaction version requested is not compatible with the consensus branch for which the
     /// transaction is intended.
     #[cfg(feature = "unstable")]
@@ -159,6 +163,11 @@ impl Display for ProposalError {
             ProposalError::ShieldingRequiresShieldedRecipient => write!(
                 f,
                 "A shielding proposal's destination must have a shielded receiver."
+            ),
+            #[cfg(feature = "zcashd-compat")]
+            ProposalError::ShieldedRecipientInTransparentTransfer => write!(
+                f,
+                "A fully-transparent transfer may only pay transparent recipients."
             ),
             #[cfg(feature = "unstable")]
             ProposalError::IncompatibleTxVersion(branch_id) => write!(

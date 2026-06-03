@@ -49,8 +49,18 @@ workspace.
 - `zcash_client_backend::fees::ChangeValue::transparent` constructor and
   `ChangeValue::is_transparent_change` accessor (behind the `transparent-inputs`
   feature flag), for non-ephemeral transparent change outputs.
+- `zcash_client_backend::data_api::wallet::propose_transparent_transfer` (behind
+  the `zcashd-compat` feature flag), the fully-transparent (t->t) analogue of
+  `propose_transfer`: it preferentially spends transparent UTXOs received at a
+  set of source addresses and, depending on the configured change strategy, may
+  produce transparent change.
+- `zcash_client_backend::proposal::ProposalError::ShieldedRecipientInTransparentTransfer`
+  (behind the `zcashd-compat` feature flag), returned by
+  `propose_transparent_transfer` when a payment targets a non-transparent
+  recipient.
 
 ### Changed
+- The `zcashd-compat` feature now implies the `transparent-inputs` feature.
 - `zcash_client_backend::data_api`:
   - Changes to the `InputSource` trait:
     - The result types of `InputSource::get_unspent_transparent_output` and

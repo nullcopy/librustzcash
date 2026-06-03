@@ -685,6 +685,90 @@ where
     Ok(proposal)
 }
 
+/// Proposes a fully-transparent (t->t) transfer that spends transparent UTXOs received at the
+/// given `source_addresses` and, depending upon the supplied change strategy, may produce
+/// transparent change.
+///
+/// This is the fully-transparent analogue of [`propose_transfer`]. It differs in two ways:
+///
+/// - Transparent UTXOs received at `source_addresses` are selected preferentially as inputs (via
+///   [`TransparentInputFilter::Addresses`]), ahead of any shielded notes.
+/// - Every payment in `request` must be to a transparent recipient. If any payment targets a
+///   shielded (or Unified, or TEX) address, this function returns
+///   [`ProposalError::ShieldedRecipientInTransparentTransfer`] without consulting the wallet.
+///
+/// To retain change in the transparent pool (rather than shielding it), configure the provided
+/// `change_strategy` with a [`ChangePool::Transparent`] fallback change pool (e.g. via
+/// [`fees::zip317::SingleOutputChangeStrategy::new`]); otherwise change is shielded as usual.
+///
+/// This function is intended for `zcashd` wallet-replacement use cases (e.g. Zallet) and is gated
+/// behind the `zcashd-compat` feature.
+///
+/// Returns the proposal, which may then be executed using [`create_proposed_transactions`].
+///
+/// [`ChangePool::Transparent`]: crate::fees::ChangePool::Transparent
+/// [`TransparentInputFilter::Addresses`]: crate::data_api::TransparentInputFilter::Addresses
+#[cfg(feature = "zcashd-compat")]
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
+pub fn propose_transparent_transfer<DbT, ParamsT, InputsT, ChangeT, CommitmentTreeErrT>(
+    wallet_db: &mut DbT,
+    params: &ParamsT,
+    spend_from_account: <DbT as InputSource>::AccountId,
+    input_selector: &InputsT,
+    change_strategy: &ChangeT,
+    request: zip321::TransactionRequest,
+    source_addresses: &[TransparentAddress],
+    confirmations_policy: ConfirmationsPolicy,
+    #[cfg(feature = "unstable")] proposed_version: Option<TxVersion>,
+) -> Result<
+    Proposal<ChangeT::FeeRule, <DbT as InputSource>::NoteRef>,
+    ProposeTransferErrT<DbT, CommitmentTreeErrT, InputsT, ChangeT>,
+>
+where
+    DbT: WalletRead + InputSource<Error = <DbT as WalletRead>::Error>,
+    <DbT as InputSource>::NoteRef: Copy + Eq + Ord,
+    ParamsT: consensus::Parameters + Clone,
+    InputsT: InputSelector<InputSource = DbT>,
+    ChangeT: ChangeStrategy<MetaSource = DbT>,
+{
+    // Reject any payment to a non-transparent recipient up front. A fully-transparent transfer
+    // must pay only transparent recipients; Unified and TEX recipients are rejected because they
+    // would (respectively) be routed to a shielded pool or require a shielding hop.
+    for payment in request.payments().values() {
+        let recipient_address = payment
+            .recipient_address()
+            .clone()
+            .convert_if_network::<Address>(params.network_type())?;
+        if !matches!(recipient_address, Address::Transparent(_)) {
+            return Err(ProposalError::ShieldedRecipientInTransparentTransfer.into());
+        }
+    }
+
+    let maybe_initial_heights = wallet_db
+        .get_target_and_anchor_heights(confirmations_policy.trusted)
+        .map_err(InputSelectorError::DataSource)?;
+    let (target_height, anchor_height) =
+        maybe_initial_heights.ok_or_else(|| InputSelectorError::SyncRequired)?;
+
+    let proposal = input_selector.propose_transaction(
+        params,
+        wallet_db,
+        target_height,
+        anchor_height,
+        confirmations_policy,
+        spend_from_account,
+        request,
+        change_strategy,
+        #[cfg(feature = "unstable")]
+        proposed_version,
+        Some(crate::data_api::TransparentInputFilter::Addresses(
+            source_addresses,
+        )),
+    )?;
+    Ok(proposal)
+}
+
 /// Proposes making a payment to the specified address from the given account.
 ///
 /// Returns the proposal, which may then be executed using [`create_proposed_transactions`].
