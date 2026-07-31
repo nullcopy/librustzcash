@@ -7,69 +7,144 @@
 //! Omitted versions had the same migration state as the first prior version that is
 //! included.
 
-mod account_delete_cascade;
-mod add_account_birthdays;
-mod add_account_uuids;
-mod add_transaction_trust_marker;
-mod add_transaction_views;
-mod add_transparent_receiver_address_index;
-mod add_transparent_value_index;
-mod add_utxo_account;
-mod addresses_table;
-mod ensure_default_transparent_address;
-mod ensure_orchard_ua_receiver;
-mod ephemeral_addresses;
-mod fix_bad_change_flagging;
-mod fix_bad_ironwood_change_flagging;
-mod fix_broken_commitment_trees;
-mod fix_transparent_received_outputs;
-mod fix_v_transactions_expired_unmined;
-mod full_account_ids;
-mod initial_setup;
-mod ironwood_pool_code_views;
-mod ironwood_received_notes;
-mod ironwood_shardtree;
-mod ivk_item_cache;
-mod note_locking;
-mod nullifier_map;
-mod orchard_ironwood_migration_anchor_interval;
-mod orchard_ironwood_migration_tables;
-mod orchard_note_version;
-mod orchard_received_notes;
-mod orchard_shardtree;
-mod received_notes_nullable_nf;
-mod receiving_key_scopes;
-mod sapling_memo_consistency;
-mod sent_notes_to_internal;
-mod shardtree_support;
-mod spend_key_available;
-mod standalone_p2sh;
-mod support_legacy_sqlite;
-mod support_zcashd_wallet_import;
-mod transparent_gap_limit_handling;
-mod tree_retained_checkpoints;
-mod tx_observation_height;
-mod tx_retrieval_queue;
-mod tx_retrieval_queue_expiry;
-mod tx_status_observation_intent;
-mod ufvk_support;
-mod utxos_table;
-mod utxos_to_txos;
-mod v_address_uses_ironwood;
-mod v_received_output_spends_account;
-mod v_sapling_shard_unscanned_ranges;
-mod v_transactions_additional_totals;
-mod v_transactions_net;
-mod v_transactions_note_uniqueness;
-mod v_transactions_pool_crossing;
-mod v_transactions_shielding_balance;
-mod v_transactions_transparent_history;
-mod v_tx_outputs_key_scopes;
-mod v_tx_outputs_return_addrs;
-mod v_tx_outputs_transparent_addresses;
-mod v_tx_outputs_use_legacy_false;
-mod wallet_summaries;
-mod witness_stabilized_notes;
+/// Returns whether `id` appears in any of the given dependency lists.
+const fn is_depended_on(id: Uuid, dependencies: &[&[Uuid]]) -> bool {
+    let mut i = 0;
+    while i < dependencies.len() {
+        let deps = dependencies[i];
+        let mut j = 0;
+        while j < deps.len() {
+            if deps[j].as_u128() == id.as_u128() {
+                return true;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Counts the identifiers in `ids` that appear in none of the given dependency lists.
+const fn count_leaves(ids: &[Uuid], dependencies: &[&[Uuid]]) -> usize {
+    let mut count = 0;
+    let mut i = 0;
+    while i < ids.len() {
+        if !is_depended_on(ids[i], dependencies) {
+            count += 1;
+        }
+        i += 1;
+    }
+    count
+}
+
+/// Collects the identifiers in `ids` that appear in none of the given dependency lists,
+/// preserving their order in `ids`.
+///
+/// `N` must equal [`count_leaves`] for the same arguments; const evaluation fails otherwise.
+const fn collect_leaves<const N: usize>(ids: &[Uuid], dependencies: &[&[Uuid]]) -> [Uuid; N] {
+    let mut leaves = [Uuid::nil(); N];
+    let mut count = 0;
+    let mut i = 0;
+    while i < ids.len() {
+        if !is_depended_on(ids[i], dependencies) {
+            leaves[count] = ids[i];
+            count += 1;
+        }
+        i += 1;
+    }
+    assert!(count == N);
+    leaves
+}
+
+/// Declares the given migration modules, and defines [`CURRENT_LEAF_MIGRATIONS`] as the
+/// leaves of the migration dependency graph, computed at compile time.
+///
+/// Each module contributes its `MIGRATION_ID` and `DEPENDENCIES` constants to the graph;
+/// the leaves are the migrations on which no other migration depends. Because this macro
+/// is what declares the modules, the graph necessarily covers every migration module.
+macro_rules! migration_modules {
+    ($($migration:ident),+ $(,)?) => {
+        $(mod $migration;)+
+
+        /// The identifiers of all migrations in the dependency graph.
+        const ALL_MIGRATION_IDS: &[Uuid] = &[$($migration::MIGRATION_ID),+];
+
+        /// The dependencies of each migration, in the same order as [`ALL_MIGRATION_IDS`].
+        const ALL_DEPENDENCIES: &[&[Uuid]] = &[$($migration::DEPENDENCIES),+];
+
+        const LEAF_MIGRATION_IDS: [Uuid; count_leaves(ALL_MIGRATION_IDS, ALL_DEPENDENCIES)] =
+            collect_leaves(ALL_MIGRATION_IDS, ALL_DEPENDENCIES);
+
+        /// Leaf migrations as of the current repository state.
+        pub const CURRENT_LEAF_MIGRATIONS: &[Uuid] = &LEAF_MIGRATION_IDS;
+    };
+}
+
+migration_modules!(
+    account_delete_cascade,
+    add_account_birthdays,
+    add_account_uuids,
+    add_transaction_trust_marker,
+    add_transaction_views,
+    add_transparent_receiver_address_index,
+    add_transparent_value_index,
+    add_utxo_account,
+    addresses_table,
+    ensure_default_transparent_address,
+    ensure_orchard_ua_receiver,
+    ephemeral_addresses,
+    fix_bad_change_flagging,
+    fix_bad_ironwood_change_flagging,
+    fix_broken_commitment_trees,
+    fix_transparent_received_outputs,
+    fix_v_transactions_expired_unmined,
+    full_account_ids,
+    initial_setup,
+    ironwood_pool_code_views,
+    ironwood_received_notes,
+    ironwood_shardtree,
+    ivk_item_cache,
+    note_locking,
+    nullifier_map,
+    orchard_ironwood_migration_anchor_interval,
+    orchard_ironwood_migration_tables,
+    orchard_note_version,
+    orchard_received_notes,
+    orchard_shardtree,
+    received_notes_nullable_nf,
+    receiving_key_scopes,
+    sapling_memo_consistency,
+    sent_notes_to_internal,
+    shardtree_support,
+    spend_key_available,
+    standalone_p2sh,
+    support_legacy_sqlite,
+    support_zcashd_wallet_import,
+    transparent_gap_limit_handling,
+    tree_retained_checkpoints,
+    tx_observation_height,
+    tx_retrieval_queue,
+    tx_retrieval_queue_expiry,
+    tx_status_observation_intent,
+    ufvk_support,
+    utxos_table,
+    utxos_to_txos,
+    v_address_uses_ironwood,
+    v_received_output_spends_account,
+    v_sapling_shard_unscanned_ranges,
+    v_transactions_additional_totals,
+    v_transactions_net,
+    v_transactions_note_uniqueness,
+    v_transactions_pool_crossing,
+    v_transactions_shielding_balance,
+    v_transactions_transparent_history,
+    v_tx_outputs_key_scopes,
+    v_tx_outputs_return_addrs,
+    v_tx_outputs_transparent_addresses,
+    v_tx_outputs_use_legacy_false,
+    wallet_summaries,
+    witness_stabilized_notes,
+);
 
 use std::{rc::Rc, sync::Mutex};
 
@@ -553,20 +628,6 @@ pub const V_0_22_0_RC2: &[Uuid] = &[
     note_locking::MIGRATION_ID,
 ];
 
-/// Leaf migrations as of the current repository state.
-pub const CURRENT_LEAF_MIGRATIONS: &[Uuid] = &[
-    v_tx_outputs_transparent_addresses::MIGRATION_ID,
-    ivk_item_cache::MIGRATION_ID,
-    add_transparent_receiver_address_index::MIGRATION_ID,
-    add_transparent_value_index::MIGRATION_ID,
-    fix_bad_ironwood_change_flagging::MIGRATION_ID,
-    v_address_uses_ironwood::MIGRATION_ID,
-    v_transactions_pool_crossing::MIGRATION_ID,
-    orchard_ironwood_migration_anchor_interval::MIGRATION_ID,
-    tree_retained_checkpoints::MIGRATION_ID,
-    tx_status_observation_intent::MIGRATION_ID,
-];
-
 pub(super) fn verify_network_compatibility<P: consensus::Parameters>(
     conn: &rusqlite::Connection,
     params: &P,
@@ -637,9 +698,9 @@ pub(crate) mod tests {
 
     /// `CURRENT_LEAF_MIGRATIONS` must list exactly the leaves of the migration dependency graph
     /// (the migrations that no other migration depends on), so that migrating to the current
-    /// state reaches every migration. This recomputes the leaves from the graph and checks them
-    /// against the constant, so a newly added migration that supersedes an existing leaf cannot
-    /// silently leave a stale entry behind.
+    /// state reaches every migration. This recomputes the leaves from the runtime migration
+    /// graph and checks them against the compile-time computation, guarding against divergence
+    /// between the two views of the graph.
     #[test]
     fn current_leaf_migrations_are_the_dag_leaves() {
         let migrations =
@@ -651,6 +712,20 @@ pub(crate) mod tests {
 
         let listed_leaves: HashSet<Uuid> = super::CURRENT_LEAF_MIGRATIONS.iter().copied().collect();
         assert_eq!(computed_leaves, listed_leaves);
+    }
+
+    /// Every migration module declared via `migration_modules!` must be registered in
+    /// `all_migrations`, or the runtime migration graph would be missing migrations that the
+    /// compile-time graph includes. (The converse is a compile error: a migration cannot be
+    /// registered without its module being declared.)
+    #[test]
+    fn all_migrations_registers_every_module() {
+        let migrations =
+            super::all_migrations(&Network::TestNetwork, test_clock(), test_rng(), None);
+
+        let runtime_ids: HashSet<Uuid> = migrations.iter().map(|m| m.id()).collect();
+        let listed_ids: HashSet<Uuid> = super::ALL_MIGRATION_IDS.iter().copied().collect();
+        assert_eq!(runtime_ids, listed_ids);
     }
 
     /// Every migration in the graph must have a publicly-exported identifier, so that an
