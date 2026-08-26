@@ -54,6 +54,7 @@ subtle.workspace = true
 bls12_381.workspace = true
 group.workspace = true
 orchard = { workspace = true, optional = true }
+once_cell = { workspace = true, optional = true }
 sapling = { workspace = true, optional = true }
 
 # - Test dependencies
@@ -100,6 +101,7 @@ std = [
 ## Enables use of transparent key parts and addresses
 transparent-inputs = [
     "dep:bip32",
+    "dep:once_cell",
     "transparent/transparent-inputs",
 ]
 
@@ -111,10 +113,10 @@ transparent-key-encoding = [
 ]
 
 ## Enables use of Orchard key parts and addresses
-orchard = ["dep:orchard"]
+orchard = ["dep:orchard", "dep:once_cell"]
 
 ## Enables use of Sapling key parts and addresses
-sapling = ["dep:sapling"]
+sapling = ["dep:sapling", "dep:once_cell"]
 
 ## Exposes APIs that are useful for testing, such as `proptest` strategies.
 test-dependencies = [

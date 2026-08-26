@@ -7224,6 +7224,7 @@ dependencies = [
  "jubjub",
  "memuse",
  "nonempty",
+ "once_cell",
  "orchard",
  "proptest",
  "rand 0.8.5",

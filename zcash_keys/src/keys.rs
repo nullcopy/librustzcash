@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use core::fmt::{self, Display};
 use nonempty::NonEmpty;
 
+use secrecy::zeroize::{Zeroize, ZeroizeOnDrop};
 use zcash_address::unified::{self, Container, Encoding, Typecode, Ufvk, Uivk};
 use zcash_protocol::{PoolType, consensus};
 use zip32::{AccountId, DiversifierIndex};
@@ -233,6 +234,105 @@ impl core::fmt::Debug for UnifiedSpendingKey {
     }
 }
 
+impl Zeroize for UnifiedSpendingKey {
+    /// Replaces the secret material in this key with publicly-known constants.
+    ///
+    /// Unlike a typical `Zeroize` implementation this does not leave the value filled with
+    /// zero bytes: the component key types have validity constraints (e.g. a non-zero
+    /// `ask`) that an all-zero encoding would violate. See [`UnifiedSpendingKey::erase`].
+    fn zeroize(&mut self) {
+        self.erase();
+    }
+}
+
+impl Drop for UnifiedSpendingKey {
+    fn drop(&mut self) {
+        self.erase();
+    }
+}
+
+impl ZeroizeOnDrop for UnifiedSpendingKey {}
+
+/// Overwrites `*dst` with `value` using a volatile write, so that the store is performed
+/// even when `dst` is never read again (as is the case in a `Drop` impl).
+///
+/// The previous value of `*dst` is not dropped. This is only sound for types without drop
+/// glue, which is enforced at compile time.
+fn overwrite<T>(dst: &mut T, value: T) {
+    const {
+        assert!(
+            !core::mem::needs_drop::<T>(),
+            "overwrite may only be used with types that have no drop glue"
+        )
+    };
+    // SAFETY: `dst` is a valid, aligned, exclusively-borrowed `T`, and `value` is a valid `T`.
+    // `T` has no drop glue (checked above), so skipping the drop of the old value leaks
+    // nothing.
+    unsafe { core::ptr::write_volatile(dst, value) };
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+}
+
+/// Well-known, non-secret "null" keys used to overwrite secret key material on drop.
+///
+/// Constructing these involves key derivation (on the order of 100µs–1ms), so each is
+/// computed once and cached; overwriting a key is then just a copy.
+#[cfg(any(
+    feature = "transparent-inputs",
+    feature = "sapling",
+    feature = "orchard"
+))]
+mod null_keys {
+    use alloc::boxed::Box;
+    use once_cell::race::OnceBox;
+
+    #[cfg(feature = "transparent-inputs")]
+    pub(super) fn transparent() -> ::transparent::keys::AccountPrivKey {
+        static NULL: OnceBox<::transparent::keys::AccountPrivKey> = OnceBox::new();
+        NULL.get_or_init(|| {
+            let xprv = bip32::ExtendedPrivateKey::new([0u8; 32])
+                .expect("derivation from a fixed 32-byte seed is deterministic and succeeds");
+            Box::new(::transparent::keys::AccountPrivKey::from_extended_privkey(
+                xprv,
+            ))
+        })
+        .clone()
+    }
+
+    /// The ZIP 32 encoding of a Sapling extended spending key with `ask = 1` and every
+    /// other field zero. `ask` must be non-zero for the encoding to be valid.
+    #[cfg(feature = "sapling")]
+    pub(super) const SAPLING_ESK_BYTES: [u8; 169] = {
+        let mut b = [0u8; 169];
+        // depth (1) || parent_fvk_tag (4) || child_index (4) || chain_code (32) || ask (32)
+        b[41] = 1;
+        b
+    };
+
+    #[cfg(feature = "sapling")]
+    pub(super) fn sapling() -> super::sapling::ExtendedSpendingKey {
+        static NULL: OnceBox<super::sapling::ExtendedSpendingKey> = OnceBox::new();
+        NULL.get_or_init(|| {
+            Box::new(
+                super::sapling::ExtendedSpendingKey::from_bytes(&SAPLING_ESK_BYTES)
+                    .expect("fixed encoding is valid"),
+            )
+        })
+        .clone()
+    }
+
+    /// The all-zero Orchard spending key.
+    #[cfg(feature = "orchard")]
+    pub(super) fn orchard() -> orchard::keys::SpendingKey {
+        static NULL: OnceBox<orchard::keys::SpendingKey> = OnceBox::new();
+        *NULL.get_or_init(|| {
+            Box::new(
+                Option::from(orchard::keys::SpendingKey::from_bytes([0u8; 32]))
+                    .expect("the all-zero Orchard spending key is valid"),
+            )
+        })
+    }
+}
+
 impl UnifiedSpendingKey {
     pub fn from_seed<P: consensus::Parameters>(
         _params: &P,
@@ -287,6 +387,24 @@ impl UnifiedSpendingKey {
             orchard: Some((&self.orchard).into()),
             unknown: vec![],
         }
+    }
+
+    /// Overwrites every component of this key with a fixed, publicly-known value.
+    ///
+    /// None of the component key types (`AccountPrivKey`, Sapling `ExtendedSpendingKey`,
+    /// Orchard `SpendingKey`) implement [`Zeroize`] or clear themselves on drop, and their
+    /// secret material is behind private fields, so we cannot zero their bytes directly.
+    /// Instead, each component is replaced wholesale with a "null" key constructed from
+    /// public constants via a volatile write, which the optimizer is not permitted to
+    /// elide even when `self` is about to be dropped. The result is a structurally valid
+    /// `UnifiedSpendingKey` that contains no secret material.
+    fn erase(&mut self) {
+        #[cfg(feature = "transparent-inputs")]
+        overwrite(&mut self.transparent, null_keys::transparent());
+        #[cfg(feature = "sapling")]
+        overwrite(&mut self.sapling, null_keys::sapling());
+        #[cfg(feature = "orchard")]
+        overwrite(&mut self.orchard, null_keys::orchard());
     }
 
     /// Returns the transparent component of the unified key at the
@@ -1885,6 +2003,57 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
+    use secrecy::zeroize::Zeroize;
+
+    #[cfg(any(
+        feature = "transparent-inputs",
+        feature = "sapling",
+        feature = "orchard"
+    ))]
+    use super::null_keys;
+
+    #[test]
+    fn null_keys_are_constructible() {
+        #[cfg(feature = "transparent-inputs")]
+        let _ = null_keys::transparent();
+        #[cfg(feature = "sapling")]
+        assert_eq!(
+            null_keys::sapling().to_bytes(),
+            null_keys::SAPLING_ESK_BYTES
+        );
+        #[cfg(feature = "orchard")]
+        assert_eq!(null_keys::orchard().to_bytes(), &[0u8; 32]);
+    }
+
+    #[test]
+    fn usk_zeroize_replaces_all_components() {
+        let mut usk =
+            super::UnifiedSpendingKey::from_seed(&MAIN_NETWORK, &[7u8; 32], AccountId::ZERO)
+                .unwrap();
+
+        #[cfg(feature = "transparent-inputs")]
+        assert_ne!(
+            usk.transparent().to_bytes(),
+            null_keys::transparent().to_bytes()
+        );
+        #[cfg(feature = "sapling")]
+        assert_ne!(usk.sapling().to_bytes(), null_keys::SAPLING_ESK_BYTES);
+        #[cfg(feature = "orchard")]
+        assert_ne!(usk.orchard().to_bytes(), &[0u8; 32]);
+
+        usk.zeroize();
+
+        #[cfg(feature = "transparent-inputs")]
+        assert_eq!(
+            usk.transparent().to_bytes(),
+            null_keys::transparent().to_bytes()
+        );
+        #[cfg(feature = "sapling")]
+        assert_eq!(usk.sapling().to_bytes(), null_keys::SAPLING_ESK_BYTES);
+        #[cfg(feature = "orchard")]
+        assert_eq!(usk.orchard().to_bytes(), &[0u8; 32]);
+    }
+
     use proptest::prelude::proptest;
 
     use zcash_protocol::consensus::MAIN_NETWORK;

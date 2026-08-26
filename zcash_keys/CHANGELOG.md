@@ -9,6 +9,15 @@ workspace.
 
 ## [Unreleased]
 
+### Added
+- `zcash_keys::keys::UnifiedSpendingKey` now implements `Drop`, `zeroize::Zeroize`
+  and `zeroize::ZeroizeOnDrop`. On drop (or on an explicit `zeroize()` call) each
+  component key is overwritten with a fixed, publicly-known "null" key via a
+  volatile write, so that the seed-derived secret material does not remain in
+  freed memory. Note that because `Drop` is now implemented, the fields of
+  `UnifiedSpendingKey` can no longer be moved out of it (they were already
+  private, so this only affects code within this crate).
+
 ## [0.15.0] - 2026-07-09
 
 ### Changed
